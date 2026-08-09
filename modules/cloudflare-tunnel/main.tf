@@ -8,11 +8,19 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 6.0, < 7.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.0"
+    }
   }
 }
 
 provider "cloudflare" {
   api_token = var.cloudflare_api_token
+}
+
+provider "aws" {
+  region = var.aws_region
 }
 
 # Generate a random secret for the tunnel (must be 32+ bytes)
