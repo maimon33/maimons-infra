@@ -12,18 +12,27 @@ AWS_REGION="${AWS_REGION:-eu-central-1}"
 SECRETS_MANAGER_SECRET_NAME="${SECRETS_MANAGER_SECRET_NAME:-maimons/cloudflare-tunnel-token}"
 CLOUDFLARED_USER="cloudflared"
 CLOUDFLARED_HOME="/opt/cloudflared"
-CLOUDFLARED_CERT_PATH="${CLOUDFLARED_HOME}/.cloudflared"
+CLOUDFLARED_CONFIG_PATH="${CLOUDFLARED_HOME}/.cloudflared"
 
 # Step 1: Install cloudflared
 echo "[$(date)] Installing cloudflared..."
 if ! command -v cloudflared &> /dev/null; then
+  CLOUDFLARED_ARCH="$(dpkg --print-architecture)"
+  case "${CLOUDFLARED_ARCH}" in
+    amd64 | arm64) ;;
+    *)
+      echo "[$(date)] ERROR: Unsupported architecture: ${CLOUDFLARED_ARCH}"
+      exit 1
+      ;;
+  esac
+
   cd /tmp
-  curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.tgz -o cloudflared.tgz
+  curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CLOUDFLARED_ARCH}.tgz" -o cloudflared.tgz
   curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/SHA256 -o SHA256
 
   # Verify checksum
   echo "[$(date)] Verifying cloudflared binary checksum..."
-  EXPECTED_CHECKSUM=$(grep cloudflared-linux-arm64.tgz SHA256 | awk '{print $1}')
+  EXPECTED_CHECKSUM=$(grep "cloudflared-linux-${CLOUDFLARED_ARCH}.tgz" SHA256 | awk '{print $1}')
   ACTUAL_CHECKSUM=$(sha256sum cloudflared.tgz | awk '{print $1}')
 
   if [ "${EXPECTED_CHECKSUM}" != "${ACTUAL_CHECKSUM}" ]; then
@@ -45,7 +54,7 @@ if ! id "${CLOUDFLARED_USER}" &>/dev/null; then
   useradd --system --home-dir "${CLOUDFLARED_HOME}" --shell /usr/sbin/nologin "${CLOUDFLARED_USER}"
 fi
 
-mkdir -p "${CLOUDFLARED_CERT_PATH}"
+mkdir -p "${CLOUDFLARED_CONFIG_PATH}"
 chown -R "${CLOUDFLARED_USER}:${CLOUDFLARED_USER}" "${CLOUDFLARED_HOME}"
 chmod 755 "${CLOUDFLARED_HOME}"
 
@@ -62,12 +71,13 @@ if [ -z "${TUNNEL_TOKEN}" ]; then
   exit 1
 fi
 
-# Step 4: Create cloudflared config directory and credentials
+# Step 4: Store the remotely managed tunnel token
 echo "[$(date)] Configuring cloudflared..."
-echo "${TUNNEL_TOKEN}" > "${CLOUDFLARED_CERT_PATH}/credentials.json"
+echo "${TUNNEL_TOKEN}" > "${CLOUDFLARED_CONFIG_PATH}/token"
 
-chown "${CLOUDFLARED_USER}:${CLOUDFLARED_USER}" "${CLOUDFLARED_CERT_PATH}/credentials.json"
-chmod 600 "${CLOUDFLARED_CERT_PATH}/credentials.json"
+chown "${CLOUDFLARED_USER}:${CLOUDFLARED_USER}" "${CLOUDFLARED_CONFIG_PATH}/token"
+chmod 600 "${CLOUDFLARED_CONFIG_PATH}/token"
+unset TUNNEL_TOKEN
 
 # Step 5: Create systemd service file
 echo "[$(date)] Creating systemd service..."
@@ -81,7 +91,7 @@ StartLimitInterval=0
 Type=simple
 User=${CLOUDFLARED_USER}
 WorkingDirectory=${CLOUDFLARED_HOME}
-ExecStart=/usr/local/bin/cloudflared tunnel run --credentials-file=${CLOUDFLARED_CERT_PATH}/credentials.json
+ExecStart=/usr/local/bin/cloudflared tunnel --metrics 0.0.0.0:20241 run --token-file ${CLOUDFLARED_CONFIG_PATH}/token
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -95,7 +105,7 @@ EOF
 echo "[$(date)] Enabling and starting cloudflared service..."
 systemctl daemon-reload
 systemctl enable cloudflared
-systemctl start cloudflared
+systemctl restart cloudflared
 
 # Verify service is running
 sleep 5

@@ -9,6 +9,19 @@ variable "cloudflare_api_token" {
   sensitive   = true
 }
 
+variable "ingress_services" {
+  description = "Map of public hostnames to app URLs reachable by cloudflared on the host."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for service_url in values(var.ingress_services) : can(regex("^https?://", service_url))
+    ])
+    error_message = "Every ingress service URL must use HTTP or HTTPS."
+  }
+}
+
 variable "tunnel_name" {
   description = "Name of the Cloudflare Tunnel."
   type        = string

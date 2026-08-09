@@ -12,3 +12,13 @@ output "github_oidc_provider_arn" {
   description = "ARN of the managed GitHub Actions OIDC provider."
   value       = try(aws_iam_openid_connect_provider.github[0].arn, null)
 }
+
+output "github_ssm_role_arn" {
+  description = "ARN of the GitHub OIDC role for SSM session manager access."
+  value       = try(aws_iam_role.github_ssm[0].arn, null)
+}
+
+output "github_ssm_role_name" {
+  description = "Name of the GitHub OIDC role for SSM session manager access."
+  value       = try(aws_iam_role.github_ssm[0].name, null)
+}

@@ -2,11 +2,11 @@ resource "cloudflare_dns_record" "site" {
   for_each = var.sites
 
   comment = "Managed by Terraform for ${each.key}"
-  content = var.direct_origin_ip
+  content = coalesce(var.tunnel_cname, var.direct_origin_ip)
   name    = each.value.hostname
   proxied = true
   ttl     = 1
-  type    = "A"
+  type    = var.tunnel_cname == null ? "A" : "CNAME"
   zone_id = var.zone_id
 }
 

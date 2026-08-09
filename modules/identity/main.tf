@@ -106,3 +106,81 @@ resource "aws_iam_openid_connect_provider" "github" {
 
   tags = var.tags
 }
+
+data "aws_iam_policy_document" "github_oidc_assume" {
+  count = var.manage_github_oidc_provider ? 1 : 0
+
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      identifiers = [aws_iam_openid_connect_provider.github[0].arn]
+      type        = "Federated"
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:maimon33/*"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "github_ssm" {
+  statement {
+    actions = [
+      "ssm:StartSession",
+      "ssm:TerminateSession",
+      "ssm:GetConnectionStatus",
+    ]
+    effect    = "Allow"
+    resources = ["arn:aws:ssm:*:*:document/AWS-StartInteractiveCommand"]
+  }
+
+  statement {
+    actions = [
+      "ec2:DescribeInstances",
+    ]
+    effect    = "Allow"
+    resources = ["*"]
+  }
+
+  statement {
+    actions = [
+      "ssmmessages:CreateControlChannel",
+      "ssmmessages:CreateDataChannel",
+      "ssmmessages:OpenControlChannel",
+      "ssmmessages:OpenDataChannel",
+    ]
+    effect    = "Allow"
+    resources = ["*"]
+  }
+
+  statement {
+    actions = [
+      "ec2messages:AcknowledgeMessage",
+      "ec2messages:GetEndpoint",
+      "ec2messages:GetMessages",
+    ]
+    effect    = "Allow"
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role" "github_ssm" {
+  count = var.manage_github_oidc_provider ? 1 : 0
+
+  assume_role_policy = data.aws_iam_policy_document.github_oidc_assume[0].json
+  name               = "${var.name_prefix}-github-ssm"
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "github_ssm" {
+  count = var.manage_github_oidc_provider ? 1 : 0
+
+  name   = "ssm-session-manager"
+  policy = data.aws_iam_policy_document.github_ssm.json
+  role   = aws_iam_role.github_ssm[0].id
+}

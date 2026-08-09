@@ -18,10 +18,17 @@ variable "manage_zone_settings" {
 variable "sites" {
   description = "Approved public site catalog and Access configuration."
   type = map(object({
-    access_emails  = optional(set(string), [])
-    access_path    = optional(string, "/admin")
+    access_emails = optional(set(string), [])
+    access_path   = optional(string, "/admin")
     hostname      = string
   }))
+}
+
+variable "tunnel_cname" {
+  description = "Optional Cloudflare Tunnel CNAME target used instead of the direct origin address."
+  type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "zone_id" {

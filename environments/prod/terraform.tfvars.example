@@ -44,4 +44,12 @@ services = {
     internal_port = 3010
     service_name  = "mosar"
   }
+  monitoring = {
+    access_emails = ["REPLACE_WITH_OPERATOR_EMAIL"]
+    access_path   = "/"
+    health_path   = "/healthz"
+    hostname      = "monitor.maimons.org"
+    internal_port = 3000
+    service_name  = "monitoring"
+  }
 }

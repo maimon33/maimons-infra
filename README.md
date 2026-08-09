@@ -1,6 +1,6 @@
 # Maimons shared infrastructure
 
-Terraform for the shared EC2 platform that hosts Mosar and future services behind Cloudflare and Traefik.
+Terraform for the shared EC2 platform that hosts Mosar and future services behind a Cloudflare Tunnel.
 
 Cloudflare terminates public TLS. The origin path is HTTP-only and security-group restricted to Cloudflare's published IPv4 and IPv6 ranges; application ports are never published.
 
@@ -9,8 +9,9 @@ Cloudflare terminates public TLS. The origin path is HTTP-only and security-grou
 - `bootstrap/state` creates the encrypted, versioned S3 Terraform backend.
 - `environments/prod` composes the production platform and is the import target.
 - `modules` contains import-friendly AWS and Cloudflare resource groups.
-- `platform` contains the centrally owned Traefik runtime configuration.
+- `platform` contains the host-level runtime services, including monitoring.
 - `docs/import-guide.md` describes the safe import sequence for existing resources.
+- `docs/monitoring.md` describes the protected Docker and Cloudflare monitoring dashboard.
 
 ## Safe first run
 

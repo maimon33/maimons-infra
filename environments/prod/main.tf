@@ -20,8 +20,10 @@ module "identity" {
   kms_key_arn                 = module.data.kms_key_arn
   manage_github_oidc_provider = var.manage_github_oidc_provider
   name_prefix                 = var.project_name
-  secret_arns                 = module.data.secret_arns
-  tags                        = local.common_tags
+  secret_arns = merge(module.data.secret_arns, {
+    cloudflare_tunnel = module.cloudflare_tunnel.tunnel_token_secret_arn
+  })
+  tags = local.common_tags
 }
 
 module "network" {
@@ -96,6 +98,7 @@ module "cloudflare" {
   manage_cache_rules   = var.manage_cloudflare_cache_rules
   manage_zone_settings = var.manage_cloudflare_zone_settings
   sites                = local.cloudflare_sites
+  tunnel_cname         = module.cloudflare_tunnel.tunnel_cname
   zone_id              = var.cloudflare_zone_id
 }
 

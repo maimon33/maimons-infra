@@ -15,9 +15,12 @@ resource "aws_instance" "host" {
   key_name                             = var.key_name
   monitoring                           = true
   subnet_id                            = var.subnet_id
-  user_data                            = file("${path.module}/user-data.sh")
-  user_data_replace_on_change          = false
-  vpc_security_group_ids               = var.security_group_ids
+  user_data = join("\n", [
+    file("${path.module}/user-data.sh"),
+    file("${path.module}/../ec2-startup/cloudflared-startup.sh"),
+  ])
+  user_data_replace_on_change = false
+  vpc_security_group_ids      = var.security_group_ids
 
   metadata_options {
     http_endpoint               = "enabled"
@@ -87,4 +90,3 @@ resource "aws_volume_attachment" "application_data" {
   instance_id = aws_instance.host.id
   volume_id   = aws_ebs_volume.application_data.id
 }
-

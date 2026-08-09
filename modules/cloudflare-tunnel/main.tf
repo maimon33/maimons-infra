@@ -36,6 +36,23 @@ resource "cloudflare_zero_trust_tunnel_cloudflared" "platform" {
   tunnel_secret = random_password.tunnel_secret.result
 }
 
+resource "cloudflare_zero_trust_tunnel_cloudflared_config" "platform" {
+  account_id = var.cloudflare_account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.platform.id
+
+  config = {
+    ingress = concat(
+      [
+        for hostname in sort(keys(var.ingress_services)) : {
+          hostname = hostname
+          service  = var.ingress_services[hostname]
+        }
+      ],
+      [{ service = "http_status:404" }]
+    )
+  }
+}
+
 # Get tunnel token via data source
 data "cloudflare_zero_trust_tunnel_cloudflared_token" "platform" {
   account_id = var.cloudflare_account_id
