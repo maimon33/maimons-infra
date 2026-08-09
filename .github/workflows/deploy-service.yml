@@ -51,6 +51,9 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     outputs:
       deployment_status: ${{ steps.finalize.outputs.deployment_status }}
       service_url: ${{ steps.finalize.outputs.service_url }}
@@ -448,6 +451,7 @@ jobs:
             --output text
 
       - name: Apply Terraform for Cloudflare routes
+        if: success()
         id: terraform-apply
         env:
           TERRAFORM_PATH: ${{ inputs.terraform_path }}
@@ -455,7 +459,8 @@ jobs:
         run: |
           echo "Applying Terraform for Cloudflare routes..."
 
-          cd "$TERRAFORM_PATH"
+          TERRAFORM_DIR="${{ github.workspace }}/${{ inputs.terraform_path }}"
+          cd "$TERRAFORM_DIR"
 
           # Initialize Terraform
           terraform init
