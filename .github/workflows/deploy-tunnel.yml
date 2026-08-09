@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   deploy-tunnel:
-    uses: ./.github/workflows/deploy-service.yml@main
+    uses: ./.github/workflows/deploy-service.yml
     with:
       service_name: tunnel-daemon
       docker_compose_path: ./platform/compose.yaml
