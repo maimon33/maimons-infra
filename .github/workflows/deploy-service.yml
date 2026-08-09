@@ -314,7 +314,7 @@ jobs:
               exit 0
             fi
             echo "[$(date)] Attempt $i/$TIMEOUT: health check pending..."
-            sleep 1
+            sleep 2
           done
 
           echo "[$(date)] ERROR: Health check timeout after $TIMEOUT seconds"
