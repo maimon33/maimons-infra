@@ -1,0 +1,33 @@
+api:
+  dashboard: false
+  insecure: false
+
+ping: {}
+
+entryPoints:
+  web:
+    address: ":80"
+    transport:
+      respondingTimeouts:
+        idleTimeout: 300s
+        readTimeout: 300s
+        writeTimeout: 300s
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+accessLog:
+  filePath: /var/log/traefik/access.json
+  format: json
+  bufferingSize: 100
+
+log:
+  format: json
+  level: INFO
+
+metrics:
+  prometheus:
+    addEntryPointsLabels: true
+    addRoutersLabels: true
+    addServicesLabels: true

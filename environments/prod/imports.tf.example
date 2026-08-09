@@ -1,0 +1,53 @@
+# Copy this file to imports.tf only after replacing every placeholder.
+# Import one resource group at a time and run `terraform plan` after each group.
+
+import {
+  id = "vpc-REPLACE"
+  to = module.network.aws_vpc.platform
+}
+
+import {
+  id = "subnet-REPLACE"
+  to = module.network.aws_subnet.public
+}
+
+import {
+  id = "sg-REPLACE"
+  to = module.network.aws_security_group.host
+}
+
+import {
+  id = "i-REPLACE"
+  to = module.compute.aws_instance.host
+}
+
+import {
+  id = "eipalloc-REPLACE"
+  to = module.compute.aws_eip.host
+}
+
+import {
+  id = "vol-REPLACE"
+  to = module.compute.aws_ebs_volume.application_data
+}
+
+import {
+  id = "REPLACE_WITH_BUCKET_NAME"
+  to = module.data.aws_s3_bucket.backups
+}
+
+# Import this account-wide resource when GitHub Actions OIDC already exists.
+import {
+  id = "arn:aws:iam::REPLACE_WITH_ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"
+  to = module.identity.aws_iam_openid_connect_provider.github[0]
+}
+
+import {
+  id = "REPLACE_WITH_ZONE_ID/REPLACE_WITH_DNS_RECORD_ID"
+  to = module.cloudflare.cloudflare_dns_record.site["mosar"]
+}
+
+import {
+  id = "zones/REPLACE_WITH_ZONE_ID/REPLACE_WITH_ACCESS_APP_ID"
+  to = module.cloudflare.cloudflare_zero_trust_access_application.site["mosar"]
+}

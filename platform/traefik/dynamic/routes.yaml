@@ -1,0 +1,34 @@
+http:
+  middlewares:
+    mosar-upload-limit:
+      buffering:
+        maxRequestBodyBytes: 26214400
+    platform-security-headers:
+      headers:
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: strict-origin-when-cross-origin
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+
+  routers:
+    mosar:
+      entryPoints:
+        - web
+      middlewares:
+        - mosar-upload-limit
+        - platform-security-headers
+      rule: Host(`mosar.maimons.org`)
+      service: mosar
+
+  services:
+    mosar:
+      loadBalancer:
+        healthCheck:
+          interval: 15s
+          path: /api/health
+          timeout: 5s
+        passHostHeader: true
+        servers:
+          - url: http://mosar:3010
