@@ -26,6 +26,17 @@ variable "backup_bucket_name" {
   type        = string
 }
 
+variable "cloudflare_account_id" {
+  description = "Cloudflare account ID."
+  type        = string
+}
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token with Tunnel permissions."
+  type        = string
+  sensitive   = true
+}
+
 variable "cloudflare_zone_id" {
   description = "Cloudflare zone identifier."
   type        = string

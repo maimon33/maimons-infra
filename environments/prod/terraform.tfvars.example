@@ -3,7 +3,9 @@ availability_zone  = "eu-central-1a"
 ami_id             = "ami-REPLACE_WITH_EXISTING_INSTANCE_AMI"
 backup_bucket_name = "REPLACE_WITH_EXISTING_OR_NEW_BACKUP_BUCKET"
 
-cloudflare_zone_id = "REPLACE_WITH_CLOUDFLARE_ZONE_ID"
+cloudflare_account_id = "c87c068911c8932fbedbf38dae693466"
+cloudflare_api_token  = "REPLACE_WITH_CLOUDFLARE_API_TOKEN"
+cloudflare_zone_id    = "REPLACE_WITH_CLOUDFLARE_ZONE_ID"
 
 manage_cloudflare_cache_rules   = true
 manage_cloudflare_zone_settings = true
