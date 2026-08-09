@@ -26,28 +26,15 @@ permissions:
 
 jobs:
   deploy-tunnel:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Deploy Cloudflare Tunnel
-        uses: ./.github/workflows/deploy-service.yml
-        with:
-          service_name: tunnel-daemon
-          docker_compose_path: ./platform/compose.yaml
-          terraform_path: ./
-          port: "80"
-          health_check_url: http://localhost/ping
-          health_check_timeout: "30"
-        secrets:
-          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
-          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-
-      - name: Deployment Summary
-        if: success()
-        run: |
-          echo "✓ Cloudflare Tunnel deployed successfully"
-          echo ""
-          echo "Tunnel is now running on EC2 instance and routing traffic to services"
+    uses: ./.github/workflows/deploy-service.yml@main
+    with:
+      service_name: tunnel-daemon
+      docker_compose_path: ./platform/compose.yaml
+      terraform_path: ./
+      port: "80"
+      health_check_url: http://localhost/ping
+      health_check_timeout: "30"
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
