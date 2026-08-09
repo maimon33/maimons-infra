@@ -31,9 +31,9 @@ jobs:
       service_name: tunnel-daemon
       docker_compose_path: ./platform/compose.yaml
       terraform_path: ./
-      port: "80"
+      port: '80'
       health_check_url: http://localhost/ping
-      health_check_timeout: "30"
+      health_check_timeout: 30
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
