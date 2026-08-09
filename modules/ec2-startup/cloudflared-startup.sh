@@ -19,10 +19,22 @@ echo "[$(date)] Installing cloudflared..."
 if ! command -v cloudflared &> /dev/null; then
   cd /tmp
   curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.tgz -o cloudflared.tgz
+  curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/SHA256 -o SHA256
+
+  # Verify checksum
+  echo "[$(date)] Verifying cloudflared binary checksum..."
+  EXPECTED_CHECKSUM=$(grep cloudflared-linux-arm64.tgz SHA256 | awk '{print $1}')
+  ACTUAL_CHECKSUM=$(sha256sum cloudflared.tgz | awk '{print $1}')
+
+  if [ "${EXPECTED_CHECKSUM}" != "${ACTUAL_CHECKSUM}" ]; then
+    echo "[$(date)] ERROR: Checksum verification failed. Expected: ${EXPECTED_CHECKSUM}, Got: ${ACTUAL_CHECKSUM}"
+    exit 1
+  fi
+
   tar xzf cloudflared.tgz
-  sudo install -m 755 cloudflared /usr/local/bin/
-  rm -f cloudflared cloudflared.tgz
-  echo "[$(date)] cloudflared installed"
+  install -m 755 cloudflared /usr/local/bin/
+  rm -f cloudflared cloudflared.tgz SHA256
+  echo "[$(date)] cloudflared installed and verified"
 else
   echo "[$(date)] cloudflared already installed: $(cloudflared --version)"
 fi
@@ -30,12 +42,12 @@ fi
 # Step 2: Create cloudflared system user
 echo "[$(date)] Setting up cloudflared user and directories..."
 if ! id "${CLOUDFLARED_USER}" &>/dev/null; then
-  sudo useradd --system --home-dir "${CLOUDFLARED_HOME}" --shell /usr/sbin/nologin "${CLOUDFLARED_USER}"
+  useradd --system --home-dir "${CLOUDFLARED_HOME}" --shell /usr/sbin/nologin "${CLOUDFLARED_USER}"
 fi
 
-sudo mkdir -p "${CLOUDFLARED_CERT_PATH}"
-sudo chown -R "${CLOUDFLARED_USER}:${CLOUDFLARED_USER}" "${CLOUDFLARED_HOME}"
-sudo chmod 755 "${CLOUDFLARED_HOME}"
+mkdir -p "${CLOUDFLARED_CERT_PATH}"
+chown -R "${CLOUDFLARED_USER}:${CLOUDFLARED_USER}" "${CLOUDFLARED_HOME}"
+chmod 755 "${CLOUDFLARED_HOME}"
 
 # Step 3: Retrieve tunnel token from AWS Secrets Manager
 echo "[$(date)] Retrieving tunnel token from Secrets Manager..."
@@ -52,16 +64,14 @@ fi
 
 # Step 4: Create cloudflared config directory and credentials
 echo "[$(date)] Configuring cloudflared..."
-cat > "${CLOUDFLARED_CERT_PATH}/credentials.json" << EOF
-${TUNNEL_TOKEN}
-EOF
+echo "${TUNNEL_TOKEN}" > "${CLOUDFLARED_CERT_PATH}/credentials.json"
 
-sudo chown "${CLOUDFLARED_USER}:${CLOUDFLARED_USER}" "${CLOUDFLARED_CERT_PATH}/credentials.json"
-sudo chmod 600 "${CLOUDFLARED_CERT_PATH}/credentials.json"
+chown "${CLOUDFLARED_USER}:${CLOUDFLARED_USER}" "${CLOUDFLARED_CERT_PATH}/credentials.json"
+chmod 600 "${CLOUDFLARED_CERT_PATH}/credentials.json"
 
 # Step 5: Create systemd service file
 echo "[$(date)] Creating systemd service..."
-sudo tee /etc/systemd/system/cloudflared.service > /dev/null << EOF
+tee /etc/systemd/system/cloudflared.service > /dev/null << EOF
 [Unit]
 Description=Cloudflare Tunnel Service
 After=network.target
@@ -83,17 +93,17 @@ EOF
 
 # Step 6: Enable and start the service
 echo "[$(date)] Enabling and starting cloudflared service..."
-sudo systemctl daemon-reload
-sudo systemctl enable cloudflared
-sudo systemctl start cloudflared
+systemctl daemon-reload
+systemctl enable cloudflared
+systemctl start cloudflared
 
 # Verify service is running
 sleep 5
-if sudo systemctl is-active --quiet cloudflared; then
+if systemctl is-active --quiet cloudflared; then
   echo "[$(date)] SUCCESS: cloudflared service is running"
 else
   echo "[$(date)] WARNING: cloudflared service failed to start. Check logs:"
-  sudo systemctl status cloudflared || true
+  systemctl status cloudflared || true
   exit 1
 fi
 
