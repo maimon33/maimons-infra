@@ -1,0 +1,493 @@
+name: Deploy Service
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: Service container name prefix
+        required: true
+        type: string
+      docker_compose_path:
+        description: Path to docker-compose.yml file
+        required: true
+        type: string
+      terraform_path:
+        description: Path to Cloudflare route Terraform directory
+        required: true
+        type: string
+      port:
+        description: Primary exposed service port (3000-4999)
+        required: true
+        type: string
+      health_check_url:
+        description: Health check endpoint URL (e.g., http://localhost:3010/api/health)
+        required: true
+        type: string
+      health_check_timeout:
+        description: Health check timeout in seconds
+        required: true
+        type: number
+    secrets:
+      AWS_ROLE_ARN:
+        description: GitHub OIDC role ARN for SSM and ECR access
+        required: true
+      EC2_INSTANCE_ID:
+        description: EC2 instance ID for service deployment
+        required: true
+      CLOUDFLARE_API_TOKEN:
+        description: Cloudflare API token for Terraform
+        required: true
+    outputs:
+      deployment_status:
+        description: Deployment result (success or failed)
+        value: ${{ jobs.deploy.outputs.deployment_status }}
+      service_url:
+        description: HTTPS URL for the deployed service
+        value: ${{ jobs.deploy.outputs.service_url }}
+      health_check_result:
+        description: Health check result (passed, timeout, or failed)
+        value: ${{ jobs.deploy.outputs.health_check_result }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      deployment_status: ${{ steps.finalize.outputs.deployment_status }}
+      service_url: ${{ steps.finalize.outputs.service_url }}
+      health_check_result: ${{ steps.finalize.outputs.health_check_result }}
+
+    steps:
+      - name: Checkout service repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-central-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Validate port is in allowed range
+        run: |
+          PORT=${{ inputs.port }}
+          if [[ ! $PORT =~ ^[0-9]+$ ]] || [ $PORT -lt 3000 ] || [ $PORT -gt 4999 ]; then
+            echo "ERROR: Port $PORT is outside allowed range (3000-4999)"
+            exit 1
+          fi
+          echo "Port $PORT is valid"
+
+      - name: Build Docker image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ inputs.service_name }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building Docker image..."
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Push Docker image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ inputs.service_name }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Pushing Docker image to ECR..."
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      - name: Deploy via SSM - Validate port availability
+        id: ssm-validate-port
+        env:
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          SERVICE_PORT: ${{ inputs.port }}
+        run: |
+          echo "Validating port $SERVICE_PORT is free on EC2 instance..."
+
+          COMMAND=$(cat <<'EOF'
+          set -euo pipefail
+          PORT=$SERVICE_PORT
+          if netstat -tuln 2>/dev/null | grep -q ":$PORT " || ss -tuln 2>/dev/null | grep -q ":$PORT "; then
+            echo "ERROR: Port $PORT is already in use"
+            exit 1
+          fi
+          echo "Port $PORT is available"
+          EOF
+          )
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[$COMMAND]" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "Command ID: $COMMAND_ID"
+
+          # Wait for command completion
+          for i in {1..30}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+
+            if [ "$STATUS" = "Success" ] || [ "$STATUS" = "Failed" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          # Get output
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query 'StandardOutputContent' \
+            --output text
+
+      - name: Deploy via SSM - Pull service repository
+        id: ssm-pull-repo
+        env:
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          SERVICE_NAME: ${{ inputs.service_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          echo "Pulling service repository to EC2 instance..."
+
+          COMMAND=$(cat <<'EOF'
+          set -euo pipefail
+          SERVICE_NAME=$SERVICE_NAME
+          SERVICE_PATH="/opt/services/$SERVICE_NAME"
+
+          mkdir -p "$SERVICE_PATH"
+          cd "$SERVICE_PATH"
+
+          if [ -d .git ]; then
+            echo "Repository exists, pulling latest changes..."
+            git fetch origin
+            git reset --hard origin/${{ github.ref_name }}
+          else
+            echo "Cloning repository..."
+            git clone --depth 1 --branch ${{ github.ref_name }} https://github.com/$GITHUB_REPOSITORY.git .
+          fi
+
+          echo "Repository ready at $SERVICE_PATH"
+          EOF
+          )
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[$COMMAND]" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "Command ID: $COMMAND_ID"
+
+          # Wait for command completion
+          for i in {1..60}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+
+            if [ "$STATUS" = "Success" ] || [ "$STATUS" = "Failed" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          # Get output
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query 'StandardOutputContent' \
+            --output text
+
+      - name: Deploy via SSM - Blue-green deploy
+        id: ssm-deploy-containers
+        env:
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          SERVICE_NAME: ${{ inputs.service_name }}
+          DOCKER_COMPOSE_PATH: ${{ inputs.docker_compose_path }}
+          IMAGE_TAG: ${{ github.sha }}
+          ECR_IMAGE: ${{ steps.build-image.outputs.image }}
+        run: |
+          echo "Deploying containers via blue-green strategy..."
+
+          COMMAND=$(cat <<'EOF'
+          set -euo pipefail
+
+          SERVICE_NAME=$SERVICE_NAME
+          SERVICE_PATH="/opt/services/$SERVICE_NAME"
+          COMPOSE_PATH="$SERVICE_PATH/$DOCKER_COMPOSE_PATH"
+          IMAGE_TAG=$IMAGE_TAG
+          ECR_IMAGE=$ECR_IMAGE
+
+          cd "$SERVICE_PATH"
+
+          echo "[$(date)] Saving current image for potential rollback..."
+          mkdir -p .versions
+          if [ -f .versions/$IMAGE_TAG ]; then
+            echo "Version $IMAGE_TAG already exists, skipping version save"
+          else
+            echo "$IMAGE_TAG" > ".versions/$IMAGE_TAG"
+          fi
+
+          # Keep only last 3 versions
+          ls -t .versions | tail -n +4 | while read v; do rm -f ".versions/$v"; done
+
+          echo "[$(date)] Stopping old containers..."
+          export IMAGE_TAG=$IMAGE_TAG
+          docker-compose -f "$COMPOSE_PATH" down || true
+
+          echo "[$(date)] Pulling Docker image..."
+          docker pull "$ECR_IMAGE"
+
+          echo "[$(date)] Starting new containers..."
+          export IMAGE_TAG=$IMAGE_TAG
+          docker-compose -f "$COMPOSE_PATH" up -d
+
+          echo "[$(date)] Containers deployed successfully"
+          EOF
+          )
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[$COMMAND]" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "Command ID: $COMMAND_ID"
+
+          # Wait for command completion
+          for i in {1..90}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+
+            if [ "$STATUS" = "Success" ] || [ "$STATUS" = "Failed" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          # Get output
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query 'StandardOutputContent' \
+            --output text
+
+      - name: Health check - Poll endpoint
+        id: health-check
+        env:
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          HEALTH_CHECK_URL: ${{ inputs.health_check_url }}
+          HEALTH_CHECK_TIMEOUT: ${{ inputs.health_check_timeout }}
+        run: |
+          echo "Polling health check endpoint..."
+
+          COMMAND=$(cat <<'EOF'
+          set -euo pipefail
+
+          HEALTH_URL=$HEALTH_CHECK_URL
+          TIMEOUT=$HEALTH_CHECK_TIMEOUT
+
+          echo "[$(date)] Starting health check polling for $TIMEOUT seconds..."
+
+          for i in $(seq 1 $TIMEOUT); do
+            if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
+              echo "[$(date)] SUCCESS: Health check passed on attempt $i"
+              exit 0
+            fi
+            echo "[$(date)] Attempt $i/$TIMEOUT: health check pending..."
+            sleep 1
+          done
+
+          echo "[$(date)] ERROR: Health check timeout after $TIMEOUT seconds"
+          exit 1
+          EOF
+          )
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[$COMMAND]" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "Command ID: $COMMAND_ID"
+
+          # Wait for command completion with timeout
+          TIMEOUT_SECONDS=$((HEALTH_CHECK_TIMEOUT + 30))
+          START_TIME=$(date +%s)
+
+          while true; do
+            ELAPSED=$(($(date +%s) - START_TIME))
+            if [ $ELAPSED -gt $TIMEOUT_SECONDS ]; then
+              echo "SSM command timeout"
+              echo "health_check_result=timeout" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+
+            if [ "$STATUS" = "Success" ]; then
+              echo "health_check_result=passed" >> $GITHUB_OUTPUT
+              break
+            elif [ "$STATUS" = "Failed" ]; then
+              echo "health_check_result=failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          # Get output
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query 'StandardOutputContent' \
+            --output text
+
+      - name: Rollback on health check failure
+        if: failure() && steps.health-check.outcome == 'failure'
+        id: rollback
+        env:
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          SERVICE_NAME: ${{ inputs.service_name }}
+          DOCKER_COMPOSE_PATH: ${{ inputs.docker_compose_path }}
+          HEALTH_CHECK_URL: ${{ inputs.health_check_url }}
+          HEALTH_CHECK_TIMEOUT: ${{ inputs.health_check_timeout }}
+        run: |
+          echo "Health check failed, attempting rollback..."
+
+          COMMAND=$(cat <<'EOF'
+          set -euo pipefail
+
+          SERVICE_NAME=$SERVICE_NAME
+          SERVICE_PATH="/opt/services/$SERVICE_NAME"
+          COMPOSE_PATH="$SERVICE_PATH/$DOCKER_COMPOSE_PATH"
+
+          cd "$SERVICE_PATH"
+
+          # Get previous version
+          PREVIOUS_VERSION=$(ls -t .versions | sed -n '2p')
+
+          if [ -z "$PREVIOUS_VERSION" ]; then
+            echo "ERROR: No previous version available for rollback"
+            exit 1
+          fi
+
+          echo "[$(date)] Rolling back to version $PREVIOUS_VERSION..."
+          export IMAGE_TAG=$PREVIOUS_VERSION
+
+          docker-compose -f "$COMPOSE_PATH" down || true
+          docker-compose -f "$COMPOSE_PATH" up -d
+
+          echo "[$(date)] Rollback complete, running health check..."
+
+          HEALTH_URL=$HEALTH_CHECK_URL
+          TIMEOUT=$HEALTH_CHECK_TIMEOUT
+
+          for i in $(seq 1 $TIMEOUT); do
+            if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
+              echo "[$(date)] SUCCESS: Rollback health check passed"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "[$(date)] ERROR: Rollback health check also failed, manual intervention required"
+          exit 1
+          EOF
+          )
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[$COMMAND]" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "Rollback command ID: $COMMAND_ID"
+
+          # Wait for rollback completion
+          for i in {1..90}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+
+            if [ "$STATUS" = "Success" ] || [ "$STATUS" = "Failed" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          # Get output
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query 'StandardOutputContent' \
+            --output text
+
+      - name: Apply Terraform for Cloudflare routes
+        id: terraform-apply
+        env:
+          TERRAFORM_PATH: ${{ inputs.terraform_path }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          echo "Applying Terraform for Cloudflare routes..."
+
+          cd "$TERRAFORM_PATH"
+
+          # Initialize Terraform
+          terraform init
+
+          # Apply Terraform
+          export CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN
+          terraform apply -auto-approve
+
+          echo "Terraform apply completed successfully"
+
+      - name: Finalize deployment
+        id: finalize
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "deployment_status=success" >> $GITHUB_OUTPUT
+            echo "health_check_result=${{ steps.health-check.outputs.health_check_result || 'passed' }}" >> $GITHUB_OUTPUT
+          else
+            echo "deployment_status=failed" >> $GITHUB_OUTPUT
+            echo "health_check_result=${{ steps.health-check.outputs.health_check_result || 'failed' }}" >> $GITHUB_OUTPUT
+          fi
+
+          # Derive service URL from service name
+          SERVICE_NAME="${{ inputs.service_name }}"
+          echo "service_url=https://$SERVICE_NAME.maimons.org" >> $GITHUB_OUTPUT
+
+      - name: Report deployment status
+        if: always()
+        run: |
+          echo "=== Deployment Summary ==="
+          echo "Service: ${{ inputs.service_name }}"
+          echo "Status: ${{ steps.finalize.outputs.deployment_status }}"
+          echo "Health Check: ${{ steps.finalize.outputs.health_check_result }}"
+          echo "Service URL: ${{ steps.finalize.outputs.service_url }}"
+          echo "Deployment: ${{ job.status }}"
