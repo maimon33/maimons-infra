@@ -35,7 +35,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 # Copy application code
 COPY src/ ./src/
@@ -44,8 +44,8 @@ COPY src/ ./src/
 EXPOSE 3010
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3010/api/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3010/api/health', (r) => {if (r.statusCode < 200 || r.statusCode >= 300) throw new Error(r.statusCode)})"
 
 # Start application
 CMD ["npm", "start"]
@@ -155,6 +155,33 @@ volumes:
 - Define persistent volumes for stateful services
 - Set `restart: unless-stopped` for automatic recovery
 - List dependencies with `depends_on`
+
+**Note:** Never hardcode secrets like `DB_PASSWORD` in docker-compose.yml. Use `.env` files or pass via GitHub Actions secrets at deployment time. Example: `POSTGRES_PASSWORD: ${DB_PASSWORD}` with the value provided by the deployment workflow environment.
+
+**Docker Internal DNS:** Service names (`web`, `redis`) become hostnames automatically in Docker networks. For example, the `web` service can connect to `redis:6379` because Docker's embedded DNS resolver makes them discoverable on the internal network. This allows services to communicate by container name without IP addresses.
+
+## Version Tracking
+
+The deployment system tracks image versions in a `.versions` file for rollback capability:
+
+```
+/opt/services/mosar/.versions/history.txt
+```
+
+Each deployment appends the image SHA to this file. The system keeps the latest 3 versions for rollback:
+
+```
+sha-abc123
+sha-def456
+sha-ghi789
+```
+
+**This file is automatically created and managed by the deployment workflow.** You do not need to manually create or maintain it. The workflow:
+- Appends new SHA on each deployment
+- Keeps only the latest 3 versions
+- Uses this history for automatic rollback if health checks fail
+
+The `.versions` file is local to the EC2 instance and not committed to git.
 
 ## Terraform Configuration
 
