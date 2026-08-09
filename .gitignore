@@ -1,0 +1,16 @@
+.DS_Store
+.terraform/
+*.tfplan
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+backend.hcl
+imports.tf
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+platform/logs/*
+!platform/logs/.gitkeep

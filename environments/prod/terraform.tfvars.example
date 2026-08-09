@@ -1,0 +1,45 @@
+aws_region         = "eu-central-1"
+availability_zone  = "eu-central-1a"
+ami_id             = "ami-REPLACE_WITH_EXISTING_INSTANCE_AMI"
+backup_bucket_name = "REPLACE_WITH_EXISTING_OR_NEW_BACKUP_BUCKET"
+
+cloudflare_zone_id = "REPLACE_WITH_CLOUDFLARE_ZONE_ID"
+
+manage_cloudflare_cache_rules   = true
+manage_cloudflare_zone_settings = true
+
+instance_type    = "t3.large"
+root_volume_size = 30
+data_volume_size = 100
+
+# Keep empty after Systems Manager access is verified.
+ssh_ipv4_cidrs = []
+
+alarm_email_addresses = [
+  "REPLACE_WITH_OPERATOR_EMAIL",
+]
+
+service_secret_names = [
+  "mosar/runtime",
+  "observability/grafana-cloud",
+]
+
+# Populate these with CI roles or users now; replace static principals with OIDC-backed roles later.
+deployment_principal_arns = {
+}
+
+manage_github_oidc_provider = true
+github_repository_subjects = {
+  mosar = ["repo:maimon33/mosar.maimons.org:ref:refs/heads/master"]
+}
+
+services = {
+  mosar = {
+    access_emails = ["REPLACE_WITH_ADMIN_EMAIL"]
+    access_path   = "/admin"
+    health_path   = "/api/health"
+    hostname      = "mosar.maimons.org"
+    internal_port = 3010
+    service_name  = "mosar"
+  }
+}
