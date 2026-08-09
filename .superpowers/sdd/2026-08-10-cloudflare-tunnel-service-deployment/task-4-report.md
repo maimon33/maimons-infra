@@ -5,7 +5,8 @@
 **Date Completed:** 2026-08-10
 
 **Initial Commit SHA:** ab02d0a  
-**Final Commit SHA:** 709bd2d (critical fixes applied)
+**Critical Fixes Commit SHA:** 709bd2d  
+**Final Commit SHA:** 02bb96c (all fixes applied)
 
 ## Summary
 
@@ -138,8 +139,11 @@ The following critical and minor issues were identified and fixed:
    - Anchors to workspace root ensuring correct directory regardless of context
 
 2. **Health Check Retry Interval**
-   - Verified health check implementation uses `sleep 2` (compliant with spec)
-   - Confirmed polling interval matches specification requirement of 2-second retries
+   - **Initial Review:** Found health check polling loop used `sleep 1` instead of `sleep 2`
+   - **Fixed:** Changed line 317 from `sleep 1` to `sleep 2` in health check polling loop
+   - **Why:** Matches specification requirement for 2-second retry interval
+   - **Note:** Different from SSM rollback loop which correctly used `sleep 2`
+   - **Commit:** 02bb96c
 
 ### Post-Fix Validation
 ```
@@ -147,17 +151,32 @@ yamllint -d relaxed .github/workflows/deploy-service.yml
 ```
 Result: PASS (syntax valid, only minor line-length warnings)
 
+Validation performed after each fix round — all YAML syntax valid throughout.
+
 ## Commit Information
 
-**Initial Commit:**
-- **Commit:** ab02d0a
+**Commit 1 - Initial Implementation:**
+- **SHA:** ab02d0a
 - **Message:** "feat: add reusable GitHub workflow for service deployment"
+- **Content:** Complete workflow with 493 lines, all core functionality
 
-**Fix Commit:**
-- **Commit:** 709bd2d
+**Commit 2 - Critical Fixes:**
+- **SHA:** 709bd2d
 - **Message:** "fix: address critical and minor issues in deployment workflow"
-- **Critical Fixes:** OIDC permissions, Terraform conditional execution
-- **Minor Fixes:** Terraform path anchoring, spec compliance verification
+- **Critical Fixes:** 
+  - OIDC permissions block (id-token: write, contents: read)
+  - Terraform conditional execution (if: success())
+- **Minor Fixes:** 
+  - Terraform path anchoring to github.workspace
+  - Spec compliance verification
+- **Co-authored:** Claude Haiku 4.5
+
+**Commit 3 - Health Check Sleep Interval:**
+- **SHA:** 02bb96c
+- **Message:** "fix: use 2-second interval for health check polling"
+- **Fix:** Changed line 317 from `sleep 1` to `sleep 2` in polling loop
+- **Reason:** Matches specification requirement for 2-second retry interval
+- **Validation:** yamllint PASS
 - **Co-authored:** Claude Haiku 4.5
 
 ## Next Steps for Service Repos
