@@ -89,3 +89,49 @@ All three files created and validated:
 ## Concern Noted
 
 The plan file contained outdated Cloudflare Terraform resource types that are no longer supported in v5.22+. The code has been updated to match the current provider API while maintaining the same module interface and outputs. This ensures compatibility with the specified provider version.
+
+---
+
+## Code Review Fixes Applied
+
+**Review feedback received:** Two issues found in initial implementation.
+
+### Fix 1: Add Random Provider Declaration
+
+**Issue:** Module used `random_password` resource but didn't declare `random` provider in `required_providers`.
+
+**Fix Applied:**
+```hcl
+random = {
+  source  = "hashicorp/random"
+  version = ">= 3.0"
+}
+```
+
+Added to `main.tf` terraform block.
+
+**Commit:** `8b68614`
+
+### Fix 2: Configure AWS Provider with Region Variable
+
+**Issue:** `var.aws_region` was declared as input but never used. AWS Secrets Manager resources require AWS provider configuration to know which region to use.
+
+**Fix Applied:**
+Added AWS provider block to module:
+```hcl
+provider "aws" {
+  region = var.aws_region
+}
+```
+
+This ensures AWS Secrets Manager is created in the correct region specified by the module consumer.
+
+**Commit:** `8b68614`
+
+### Final Validation
+
+Re-ran validation after fixes:
+- `terraform -chdir=modules/cloudflare-tunnel init` ✓
+- `terraform -chdir=modules/cloudflare-tunnel validate` ✓ **SUCCESS**
+
+All provider declarations now complete and variables properly consumed by module.
