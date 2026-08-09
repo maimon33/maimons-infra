@@ -13,6 +13,21 @@ output "ecr_repository_urls" {
   value       = module.data.ecr_repository_urls
 }
 
+output "cloudflare_tunnel_cname" {
+  description = "CNAME record for Cloudflare Tunnel (for manual DNS setup)."
+  value       = module.cloudflare_tunnel.tunnel_cname
+}
+
+output "cloudflare_tunnel_id" {
+  description = "Cloudflare Tunnel ID for service routing."
+  value       = module.cloudflare_tunnel.tunnel_id
+}
+
+output "cloudflare_tunnel_token_secret_arn" {
+  description = "ARN of the secret storing the tunnel token."
+  value       = module.cloudflare_tunnel.tunnel_token_secret_arn
+}
+
 output "elastic_ip" {
   description = "Elastic IP assigned to direct Cloudflare ingress."
   value       = module.compute.elastic_ip
