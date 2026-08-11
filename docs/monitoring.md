@@ -12,6 +12,12 @@ The page shows container state, CPU, memory, network counters and image names;
 Tunnel connection, stream, request and error counters; and trailing 24-hour
 requests, visits, and edge response volume by hostname.
 
+Every numeric container metric is sampled once per minute into a small SQLite
+database. The dashboard retains 30 days of hourly low, high, latest, and sample
+count rollups for CPU, memory, memory limit and percentage, network traffic,
+block I/O, process count, and running state. The database lives in the named
+`platform-monitoring-history` Docker volume and survives container replacement.
+
 Cloudflare defines a visit as a page view reached from a different referrer or a
 direct link. It is not a unique-visitor count. GraphQL values are operational
 analytics and are not billing measurements.
@@ -90,17 +96,37 @@ docker compose up --detach --build
 The dashboard still shows Docker and Tunnel health when Cloudflare Analytics is
 not configured; its edge section explains which configuration is missing.
 
-## Example pages
+## Metrics and history APIs
 
-After starting the dashboard, these views render stable sample data without
-calling Docker or Cloudflare:
+- `/metrics` exports current Docker, Tunnel, Cloudflare, collector health, and
+  30-day container low/high values in Prometheus text format. No Prometheus
+  server is required. A host-local scraper can use
+  `http://127.0.0.1:3001/metrics`.
+- `/api/history/overview` returns the 30-day low/high summary used by the page.
+- `/api/history?hours=720&container=platform-monitoring` returns hourly rollups
+  for a specific container. History requests are capped at the configured
+  retention period.
 
-- `https://monitor.maimons.dev/?demo=healthy` shows a healthy platform.
-- `https://monitor.maimons.dev/?demo=incident` shows a stopped app, high worker
-  utilization, reduced Tunnel connections, and elevated Tunnel errors.
+External access to these endpoints is covered by the same Cloudflare Access
+application as the dashboard. An unattended external Prometheus server would
+need a separate Access service-token policy; the email-only policy is retained
+for interactive access.
 
-Both pages display an `Example data` banner so they cannot be confused with the
-live dashboard.
+## Cloudflare analytics troubleshooting
+
+The dashboard now includes the response message and Cloudflare Ray ID when the
+GraphQL API returns an error. For an HTTP 400, verify the error shown on the
+page, then confirm:
+
+- `cloudflare_zone_id` is the zone ID for `maimons.dev`, not the former `.org`
+  zone;
+- the analytics token includes `Zone Analytics Read` and is scoped to that same
+  zone;
+- `cloudflare_hostnames` contains `monitor.maimons.dev`;
+- the requested dataset is available for the zone's Cloudflare plan.
+
+The hostname query uses `httpRequestsAdaptiveGroups`, a 24-hour time window,
+and a page limit of 100 to remain within typical dataset limits.
 
 ## Security notes
 

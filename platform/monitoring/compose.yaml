@@ -43,6 +43,9 @@ services:
       CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ANALYTICS_ZONE_ID:-}
       CLOUDFLARE_ZONE_NAME: ${CLOUDFLARE_ANALYTICS_ZONE_NAME:-maimons.dev}
       DOCKER_API_URL: http://docker-proxy:2375
+      HISTORY_DB_PATH: /data/history.sqlite3
+      HISTORY_RETENTION_DAYS: 30
+      HISTORY_SAMPLE_INTERVAL_SECONDS: 60
       TUNNEL_METRICS_URL: http://host.docker.internal:20241/metrics
     extra_hosts:
       - host.docker.internal:host-gateway
@@ -51,6 +54,8 @@ services:
     networks:
       - app-egress
       - monitoring
+    volumes:
+      - monitoring-history:/data
     mem_limit: 256m
     mem_reservation: 64m
     pids_limit: 100
@@ -76,3 +81,7 @@ networks:
   monitoring:
     internal: true
     name: platform-monitoring
+
+volumes:
+  monitoring-history:
+    name: platform-monitoring-history

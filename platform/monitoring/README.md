@@ -38,3 +38,8 @@ docker compose up --detach --build
 The deployment workflow also uses this directory as its working directory. It
 builds from `app`, sends `compose.yaml` and `deploy.sh` to the host, and verifies
 `http://127.0.0.1:3001/healthz`.
+
+The app stores 30 days of hourly container metric low/high rollups in the
+`platform-monitoring-history` Docker volume. Current metrics and retained
+low/high values are also available in Prometheus format at
+`http://127.0.0.1:3001/metrics`.

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import threading
 import time
 import urllib.error
@@ -19,11 +20,16 @@ TUNNEL_METRICS_URL = os.getenv(
     "TUNNEL_METRICS_URL", "http://host.docker.internal:20241/metrics"
 )
 CLOUDFLARE_API_URL = "https://api.cloudflare.com/client/v4/graphql"
+HISTORY_DB_PATH = os.getenv("HISTORY_DB_PATH", "/data/history.sqlite3")
+HISTORY_RETENTION_DAYS = max(int(os.getenv("HISTORY_RETENTION_DAYS", "30")), 24)
+HISTORY_SAMPLE_INTERVAL_SECONDS = max(
+    int(os.getenv("HISTORY_SAMPLE_INTERVAL_SECONDS", "60")), 15
+)
 CLOUDFLARE_QUERY = """
 query ZoneTraffic($zoneTag: string, $filter: filter) {
   viewer {
     zones(filter: {zoneTag: $zoneTag}) {
-      traffic: httpRequestsAdaptiveGroups(limit: 1000, filter: $filter) {
+      traffic: httpRequestsAdaptiveGroups(limit: 100, filter: $filter) {
         count
         sum { visits edgeResponseBytes }
         dimensions { clientRequestHTTPHost }
@@ -37,6 +43,15 @@ query ZoneTraffic($zoneTag: string, $filter: filter) {
 def get_json(url: str, timeout: int = 10) -> Any:
     with urllib.request.urlopen(url, timeout=timeout) as response:
         return json.load(response)
+
+
+def block_io_bytes(stats: dict[str, Any], operation: str) -> int:
+    entries = stats.get("blkio_stats", {}).get("io_service_bytes_recursive") or []
+    return sum(
+        int(entry.get("value", 0))
+        for entry in entries
+        if str(entry.get("op", "")).lower() == operation
+    )
 
 
 def docker_stats(container: dict[str, Any]) -> dict[str, Any]:
@@ -66,6 +81,7 @@ def docker_stats(container: dict[str, Any]) -> dict[str, Any]:
     rx_bytes = sum(network.get("rx_bytes", 0) for network in networks)
     networks = stats.get("networks", {}).values()
     tx_bytes = sum(network.get("tx_bytes", 0) for network in networks)
+    memory_limit = memory.get("limit", 0)
 
     labels = container.get("Labels") or {}
     return {
@@ -77,9 +93,16 @@ def docker_stats(container: dict[str, Any]) -> dict[str, Any]:
         "status": container.get("Status", "unknown"),
         "cpuPercent": round(cpu_percent, 2),
         "memoryBytes": memory_used,
-        "memoryLimitBytes": memory.get("limit", 0),
+        "memoryLimitBytes": memory_limit,
+        "memoryPercent": round(memory_used / memory_limit * 100, 2)
+        if memory_limit
+        else 0,
         "rxBytes": rx_bytes,
         "txBytes": tx_bytes,
+        "blockReadBytes": block_io_bytes(stats, "read"),
+        "blockWriteBytes": block_io_bytes(stats, "write"),
+        "pids": int(stats.get("pids_stats", {}).get("current", 0)),
+        "running": 1,
     }
 
 
@@ -99,6 +122,7 @@ def collect_docker() -> dict[str, Any]:
                             "image": container.get("Image", ""),
                             "state": container.get("State", "unknown"),
                             "status": container.get("Status", "unknown"),
+                            "running": 1,
                             "error": str(error),
                         }
                     )
@@ -110,12 +134,205 @@ def collect_docker() -> dict[str, Any]:
                         "image": container.get("Image", ""),
                         "state": container.get("State", "unknown"),
                         "status": container.get("Status", "unknown"),
+                        "running": 0,
                     }
                 )
         results.sort(key=lambda item: (item["state"] != "running", item["name"]))
         return {"ok": True, "containers": results}
     except (OSError, ValueError, KeyError) as error:
         return {"ok": False, "error": str(error), "containers": []}
+
+
+CONTAINER_METADATA_FIELDS = {
+    "id",
+    "name",
+    "service",
+    "image",
+    "state",
+    "status",
+    "error",
+}
+
+
+class HistoryStore:
+    """Small hourly min/max rollup store for every numeric container metric."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.lock = threading.Lock()
+        self.error = ""
+        self.last_pruned_at = 0.0
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with self.connect() as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS container_metric_hourly (
+                        bucket_start INTEGER NOT NULL,
+                        container_name TEXT NOT NULL,
+                        container_id TEXT NOT NULL,
+                        image TEXT NOT NULL,
+                        metric TEXT NOT NULL,
+                        min_value REAL NOT NULL,
+                        max_value REAL NOT NULL,
+                        last_value REAL NOT NULL,
+                        samples INTEGER NOT NULL,
+                        PRIMARY KEY (bucket_start, container_name, metric)
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS container_metric_hourly_lookup
+                    ON container_metric_hourly (container_name, metric, bucket_start)
+                    """
+                )
+        except (OSError, sqlite3.Error) as error:
+            self.error = str(error)
+
+    def connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.path, timeout=10)
+
+    def record(self, docker: dict[str, Any], now: float | None = None) -> None:
+        if self.error or not docker.get("ok"):
+            return
+        timestamp = now if now is not None else time.time()
+        bucket_start = int(timestamp // 3600 * 3600)
+        rows = []
+        for container in docker.get("containers", []):
+            for metric, value in container.items():
+                if metric in CONTAINER_METADATA_FIELDS or isinstance(value, bool):
+                    continue
+                if not isinstance(value, (int, float)):
+                    continue
+                rows.append(
+                    (
+                        bucket_start,
+                        str(container.get("name", "unknown")),
+                        str(container.get("id", "unknown")),
+                        str(container.get("image", "")),
+                        metric,
+                        float(value),
+                        float(value),
+                        float(value),
+                        1,
+                    )
+                )
+        if not rows:
+            return
+        try:
+            with self.lock, self.connect() as connection:
+                connection.executemany(
+                    """
+                    INSERT INTO container_metric_hourly (
+                        bucket_start, container_name, container_id, image, metric,
+                        min_value, max_value, last_value, samples
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (bucket_start, container_name, metric) DO UPDATE SET
+                        container_id = excluded.container_id,
+                        image = excluded.image,
+                        min_value = MIN(min_value, excluded.min_value),
+                        max_value = MAX(max_value, excluded.max_value),
+                        last_value = excluded.last_value,
+                        samples = samples + 1
+                    """,
+                    rows,
+                )
+                if timestamp - self.last_pruned_at >= 3600:
+                    cutoff = int(
+                        timestamp - HISTORY_RETENTION_DAYS * 24 * 60 * 60
+                    )
+                    connection.execute(
+                        "DELETE FROM container_metric_hourly WHERE bucket_start < ?",
+                        (cutoff,),
+                    )
+                    self.last_pruned_at = timestamp
+        except sqlite3.Error as error:
+            self.error = str(error)
+
+    def overview(self, days: int = HISTORY_RETENTION_DAYS) -> dict[str, Any]:
+        if self.error:
+            return {"ok": False, "error": self.error, "retentionDays": days, "metrics": []}
+        cutoff = int(time.time() - min(max(days, 1), HISTORY_RETENTION_DAYS) * 86400)
+        try:
+            with self.lock, self.connect() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT container_name, metric, MIN(min_value), MAX(max_value),
+                           SUM(samples), MIN(bucket_start), MAX(bucket_start)
+                    FROM container_metric_hourly
+                    WHERE bucket_start >= ?
+                    GROUP BY container_name, metric
+                    ORDER BY container_name, metric
+                    """,
+                    (cutoff,),
+                ).fetchall()
+            return {
+                "ok": True,
+                "retentionDays": HISTORY_RETENTION_DAYS,
+                "metrics": [
+                    {
+                        "container": row[0],
+                        "metric": row[1],
+                        "low": row[2],
+                        "high": row[3],
+                        "samples": row[4],
+                        "firstBucket": datetime.fromtimestamp(
+                            row[5], timezone.utc
+                        ).isoformat(),
+                        "lastBucket": datetime.fromtimestamp(
+                            row[6], timezone.utc
+                        ).isoformat(),
+                    }
+                    for row in rows
+                ],
+            }
+        except sqlite3.Error as error:
+            return {"ok": False, "error": str(error), "retentionDays": days, "metrics": []}
+
+    def series(
+        self, container_name: str = "", hours: int = 24 * HISTORY_RETENTION_DAYS
+    ) -> dict[str, Any]:
+        hours = min(max(hours, 1), 24 * HISTORY_RETENTION_DAYS)
+        cutoff = int(time.time() - hours * 3600)
+        if self.error:
+            return {"ok": False, "error": self.error, "hours": hours, "series": []}
+        query = """
+            SELECT bucket_start, container_name, metric, min_value, max_value,
+                   last_value, samples
+            FROM container_metric_hourly
+            WHERE bucket_start >= ?
+        """
+        parameters: list[Any] = [cutoff]
+        if container_name:
+            query += " AND container_name = ?"
+            parameters.append(container_name)
+        query += " ORDER BY bucket_start, container_name, metric"
+        try:
+            with self.lock, self.connect() as connection:
+                rows = connection.execute(query, parameters).fetchall()
+            return {
+                "ok": True,
+                "hours": hours,
+                "retentionDays": HISTORY_RETENTION_DAYS,
+                "series": [
+                    {
+                        "bucket": datetime.fromtimestamp(
+                            row[0], timezone.utc
+                        ).isoformat(),
+                        "container": row[1],
+                        "metric": row[2],
+                        "low": row[3],
+                        "high": row[4],
+                        "last": row[5],
+                        "samples": row[6],
+                    }
+                    for row in rows
+                ],
+            }
+        except sqlite3.Error as error:
+            return {"ok": False, "error": str(error), "hours": hours, "series": []}
 
 
 def collect_tunnel() -> dict[str, Any]:
@@ -191,11 +408,37 @@ class CloudflareAnalytics:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                result = json.load(response)
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    result = json.load(response)
+            except urllib.error.HTTPError as error:
+                body = error.read().decode("utf-8", errors="replace")
+                ray_id = error.headers.get("cf-ray", "")
+                try:
+                    error_payload = json.loads(body)
+                    messages = [
+                        str(item.get("message", item))
+                        for item in error_payload.get("errors", [])
+                    ]
+                    detail = "; ".join(messages) or body[:500]
+                except (ValueError, AttributeError):
+                    detail = body[:500]
+                suffix = f" (Ray ID: {ray_id})" if ray_id else ""
+                raise RuntimeError(
+                    f"Cloudflare GraphQL HTTP {error.code}: {detail}{suffix}"
+                ) from error
             if result.get("errors"):
-                raise RuntimeError(str(result["errors"]))
-            groups = result["data"]["viewer"]["zones"][0]["traffic"]
+                messages = [
+                    str(item.get("message", item)) for item in result["errors"]
+                ]
+                raise RuntimeError("; ".join(messages))
+            zones = result["data"]["viewer"]["zones"]
+            if not zones:
+                raise RuntimeError(
+                    "The configured zone was not returned. Verify that the zone ID "
+                    "belongs to maimons.dev and is included in the API token scope."
+                )
+            groups = zones[0]["traffic"]
             hostnames = []
             for group in groups:
                 hostname = group["dimensions"].get("clientRequestHTTPHost") or "unknown"
@@ -236,102 +479,35 @@ class CloudflareAnalytics:
 
 
 analytics = CloudflareAnalytics()
+history = HistoryStore(HISTORY_DB_PATH)
 
 
-def demo_status(kind: str) -> dict[str, Any]:
-    """Return stable example data for visual review without infrastructure."""
-    incident = kind == "incident"
-    containers = [
-        {
-            "id": "17d6ab126d8f",
-            "name": "mosar-app",
-            "image": "123456789.dkr.ecr.eu-central-1.amazonaws.com/mosar:8f31a2c",
-            "state": "running",
-            "status": "Up 9 days (healthy)",
-            "cpuPercent": 6.4,
-            "memoryBytes": 482344960,
-            "memoryLimitBytes": 2147483648,
-            "rxBytes": 940572671,
-            "txBytes": 3156214012,
-        },
-        {
-            "id": "38e3c46aa7c1",
-            "name": "mosar-worker",
-            "image": "123456789.dkr.ecr.eu-central-1.amazonaws.com/mosar:8f31a2c",
-            "state": "running",
-            "status": "Up 9 days",
-            "cpuPercent": 2.1,
-            "memoryBytes": 218103808,
-            "memoryLimitBytes": 1073741824,
-            "rxBytes": 182935611,
-            "txBytes": 284109348,
-        },
-        {
-            "id": "b31c1c952d72",
-            "name": "platform-monitoring",
-            "image": "maimons-monitor:8f31a2c",
-            "state": "running",
-            "status": "Up 4 hours (healthy)",
-            "cpuPercent": 0.3,
-            "memoryBytes": 32715571,
-            "memoryLimitBytes": 536870912,
-            "rxBytes": 28733102,
-            "txBytes": 8440119,
-        },
-    ]
-    if incident:
-        containers[0].update(
-            {
-                "state": "exited",
-                "status": "Exited (137) 3 minutes ago",
-                "cpuPercent": None,
-                "memoryBytes": None,
-                "memoryLimitBytes": None,
-                "rxBytes": None,
-                "txBytes": None,
-            }
-        )
-        containers[1].update(
-            {
-                "cpuPercent": 87.2,
-                "memoryBytes": 1009317314,
-            }
-        )
+class RuntimeCache:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.refresh_lock = threading.Lock()
+        self.updated_at = 0.0
+        self.value: dict[str, Any] = {
+            "docker": {"ok": False, "error": "Runtime metrics are loading", "containers": []},
+            "tunnel": {"ok": False, "error": "Tunnel metrics are loading"},
+        }
 
-    return {
-        "demo": kind,
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "viewer": "operator@example.com",
-        "docker": {"ok": True, "containers": containers},
-        "tunnel": {
-            "ok": True,
-            "connections": 2 if incident else 4,
-            "activeStreams": 3 if incident else 18,
-            "totalRequests": 184021,
-            "requestErrors": 327 if incident else 12,
-            "heartbeatRetries": 41 if incident else 0,
-        },
-        "cloudflare": {
-            "ok": True,
-            "configured": True,
-            "zone": "maimons.dev",
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
-            "hostnames": [
-                {
-                    "hostname": "mosar.maimons.dev",
-                    "requests": 82741,
-                    "visits": 6390,
-                    "bytes": 4831838208,
-                },
-                {
-                    "hostname": "monitor.maimons.dev",
-                    "requests": 1934,
-                    "visits": 124,
-                    "bytes": 84211734,
-                },
-            ],
-        },
-    }
+    def get(self, force: bool = False) -> dict[str, Any]:
+        with self.lock:
+            if not force and time.time() - self.updated_at < 10:
+                return dict(self.value)
+        with self.refresh_lock:
+            with self.lock:
+                if not force and time.time() - self.updated_at < 10:
+                    return dict(self.value)
+            value = {"docker": collect_docker(), "tunnel": collect_tunnel()}
+            with self.lock:
+                self.value = value
+                self.updated_at = time.time()
+                return dict(value)
+
+
+runtime = RuntimeCache()
 
 
 def analytics_loop() -> None:
@@ -340,21 +516,146 @@ def analytics_loop() -> None:
         time.sleep(300)
 
 
+def history_loop() -> None:
+    while True:
+        snapshot = runtime.get(force=True)
+        history.record(snapshot["docker"])
+        time.sleep(HISTORY_SAMPLE_INTERVAL_SECONDS)
+
+
+PROMETHEUS_CONTAINER_METRICS = {
+    "running": ("running", "gauge", "Whether the container is running (1 or 0)."),
+    "cpuPercent": ("cpu_percent", "gauge", "Container CPU utilization percentage."),
+    "memoryBytes": ("memory_bytes", "gauge", "Container working-set memory in bytes."),
+    "memoryLimitBytes": ("memory_limit_bytes", "gauge", "Container memory limit in bytes."),
+    "memoryPercent": ("memory_percent", "gauge", "Container memory utilization percentage."),
+    "rxBytes": ("network_receive_bytes_total", "counter", "Container network bytes received."),
+    "txBytes": ("network_transmit_bytes_total", "counter", "Container network bytes transmitted."),
+    "blockReadBytes": ("block_read_bytes_total", "counter", "Container block bytes read."),
+    "blockWriteBytes": ("block_write_bytes_total", "counter", "Container block bytes written."),
+    "pids": ("pids", "gauge", "Current container process count."),
+}
+
+
+def prometheus_label(value: object) -> str:
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def prometheus_metrics() -> bytes:
+    snapshot = runtime.get()
+    cloudflare = analytics.get()
+    lines = [
+        "# HELP maimons_monitor_up Whether the monitoring collector is operational.",
+        "# TYPE maimons_monitor_up gauge",
+        "maimons_monitor_up 1",
+    ]
+    docker = snapshot["docker"]
+    lines.extend(
+        [
+            "# HELP maimons_monitor_docker_up Whether Docker metrics collection succeeded.",
+            "# TYPE maimons_monitor_docker_up gauge",
+            f"maimons_monitor_docker_up {1 if docker.get('ok') else 0}",
+        ]
+    )
+    for source_key, (metric_name, metric_type, help_text) in PROMETHEUS_CONTAINER_METRICS.items():
+        full_name = f"maimons_monitor_container_{metric_name}"
+        lines.extend([f"# HELP {full_name} {help_text}", f"# TYPE {full_name} {metric_type}"])
+        for container in docker.get("containers", []):
+            value = container.get(source_key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            labels = (
+                f'container="{prometheus_label(container.get("name", "unknown"))}",'
+                f'id="{prometheus_label(container.get("id", "unknown"))}",'
+                f'image="{prometheus_label(container.get("image", ""))}"'
+            )
+            lines.append(f"{full_name}{{{labels}}} {value}")
+
+    tunnel = snapshot["tunnel"]
+    tunnel_metrics = {
+        "connections": ("connections", "gauge"),
+        "activeStreams": ("active_streams", "gauge"),
+        "totalRequests": ("requests_total", "counter"),
+        "requestErrors": ("request_errors_total", "counter"),
+        "heartbeatRetries": ("heartbeat_retries_total", "counter"),
+    }
+    lines.extend(
+        [
+            "# HELP maimons_monitor_tunnel_up Whether cloudflared metrics collection succeeded.",
+            "# TYPE maimons_monitor_tunnel_up gauge",
+            f"maimons_monitor_tunnel_up {1 if tunnel.get('ok') else 0}",
+        ]
+    )
+    for source_key, (metric_name, metric_type) in tunnel_metrics.items():
+        full_name = f"maimons_monitor_tunnel_{metric_name}"
+        lines.append(f"# HELP {full_name} cloudflared {metric_name.replace('_', ' ')}.")
+        lines.append(f"# TYPE {full_name} {metric_type}")
+        lines.append(f"{full_name} {tunnel.get(source_key, 0)}")
+
+    lines.extend(
+        [
+            "# HELP maimons_monitor_cloudflare_up Whether Cloudflare analytics collection succeeded.",
+            "# TYPE maimons_monitor_cloudflare_up gauge",
+            f"maimons_monitor_cloudflare_up {1 if cloudflare.get('ok') else 0}",
+            "# HELP maimons_monitor_cloudflare_requests_24h Cloudflare edge requests in the trailing 24 hours.",
+            "# TYPE maimons_monitor_cloudflare_requests_24h gauge",
+            "# HELP maimons_monitor_cloudflare_visits_24h Cloudflare visits in the trailing 24 hours.",
+            "# TYPE maimons_monitor_cloudflare_visits_24h gauge",
+            "# HELP maimons_monitor_cloudflare_edge_response_bytes_24h Cloudflare edge response bytes in the trailing 24 hours.",
+            "# TYPE maimons_monitor_cloudflare_edge_response_bytes_24h gauge",
+        ]
+    )
+    for hostname in cloudflare.get("hostnames", []):
+        label = f'hostname="{prometheus_label(hostname.get("hostname", "unknown"))}"'
+        lines.append(
+            f"maimons_monitor_cloudflare_requests_24h{{{label}}} {hostname.get('requests', 0)}"
+        )
+        lines.append(
+            f"maimons_monitor_cloudflare_visits_24h{{{label}}} {hostname.get('visits', 0)}"
+        )
+        lines.append(
+            f"maimons_monitor_cloudflare_edge_response_bytes_24h{{{label}}} {hostname.get('bytes', 0)}"
+        )
+
+    overview = history.overview()
+    lines.extend(
+        [
+            "# HELP maimons_monitor_history_up Whether persistent history storage is operational.",
+            "# TYPE maimons_monitor_history_up gauge",
+            f"maimons_monitor_history_up {1 if overview.get('ok') else 0}",
+            "# HELP maimons_monitor_container_history_low Lowest observed value in the retained window.",
+            "# TYPE maimons_monitor_container_history_low gauge",
+            "# HELP maimons_monitor_container_history_high Highest observed value in the retained window.",
+            "# TYPE maimons_monitor_container_history_high gauge",
+        ]
+    )
+    for metric in overview.get("metrics", []):
+        labels = (
+            f'container="{prometheus_label(metric["container"])}",'
+            f'metric="{prometheus_label(metric["metric"])}",'
+            f'window="{HISTORY_RETENTION_DAYS}d"'
+        )
+        lines.append(f"maimons_monitor_container_history_low{{{labels}}} {metric['low']}")
+        lines.append(f"maimons_monitor_container_history_high{{{labels}}} {metric['high']}")
+    return ("\n".join(lines) + "\n").encode()
+
+
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Maimons Monitor</title>
 <style>
-:root{color-scheme:dark;--bg:#0b1017;--panel:#121a24;--line:#223044;--text:#e9f0f7;--muted:#8998aa;--green:#45d483;--red:#ff6978;--blue:#58a6ff;--orange:#ffad45}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0,#132238 0,transparent 30%),var(--bg);color:var(--text);font:14px ui-sans-serif,system-ui,-apple-system,sans-serif}main{max-width:1200px;margin:auto;padding:32px 20px 60px}header{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px}h1{font-size:25px;margin:0 0 5px;letter-spacing:-.02em}h2{font-size:15px;margin:0 0 14px}.muted{color:var(--muted)}nav{display:flex;gap:6px;margin-bottom:20px}nav a{color:var(--muted);text-decoration:none;border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:12px}nav a:hover,nav a.active{color:var(--text);border-color:#3d5472;background:#172234}.demo{display:none;border:1px solid #59441c;background:#2a2112;color:#ffd17a;border-radius:9px;padding:9px 12px;margin-bottom:14px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px}.card,.section{background:rgba(18,26,36,.92);border:1px solid var(--line);border-radius:12px}.card{padding:16px}.card.bad{border-color:#692b37;background:rgba(53,20,28,.94)}.card.bad .value{color:var(--red)}.label{color:var(--muted);font-size:12px}.value{font-size:27px;font-weight:650;margin-top:8px}.section{padding:18px;margin-bottom:16px;overflow:auto}.row{display:flex;gap:8px;align-items:center}.dot{width:8px;height:8px;border-radius:50%;background:var(--green)}.dot.bad{background:var(--red)}table{border-collapse:collapse;width:100%;min-width:720px}th,td{text-align:left;padding:11px 8px;border-top:1px solid var(--line)}th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em}code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;color:#b9c7d7}.bar{height:5px;background:#233044;border-radius:4px;overflow:hidden;margin-top:5px;width:110px}.bar i{display:block;height:100%;background:var(--blue);border-radius:4px}.error{color:var(--red)}.pill{padding:3px 7px;border-radius:20px;background:#153421;color:var(--green);font-size:11px}.pill.bad{background:#3a1a21;color:var(--red)}@media(max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}header{align-items:flex-start;flex-direction:column;gap:8px}}</style>
-</head><body><main><header><div><h1>Maimons Monitor</h1><div class="muted">Docker runtime and Cloudflare edge, without the control-plane clutter.</div></div><div id="stamp" class="muted">Loading…</div></header>
-<nav><a href="/">Live</a><a href="/?demo=healthy">Healthy example</a><a href="/?demo=incident">Incident example</a></nav><div class="demo" id="demo"></div><div class="grid" id="cards"></div><section class="section"><h2>Containers</h2><div id="containers"></div></section><section class="section"><h2>Cloudflare edge — trailing 24 hours</h2><div id="edge"></div></section></main>
+:root{color-scheme:dark;--bg:#0b1017;--panel:#121a24;--line:#223044;--text:#e9f0f7;--muted:#8998aa;--green:#45d483;--red:#ff6978;--blue:#58a6ff;--orange:#ffad45}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0,#132238 0,transparent 30%),var(--bg);color:var(--text);font:14px ui-sans-serif,system-ui,-apple-system,sans-serif}main{max-width:1200px;margin:auto;padding:32px 20px 60px}header{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px}h1{font-size:25px;margin:0 0 5px;letter-spacing:-.02em}h2{font-size:15px;margin:0 0 14px}.muted{color:var(--muted)}.loading{display:flex;align-items:center;gap:10px;border:1px solid #294260;background:#101c2b;color:#b8d7ff;border-radius:9px;padding:11px 13px;margin-bottom:18px;transition:opacity .2s}.loading.hidden{display:none}.spinner{width:14px;height:14px;border:2px solid #35516f;border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px}.card,.section{background:rgba(18,26,36,.92);border:1px solid var(--line);border-radius:12px}.card{padding:16px}.card.bad{border-color:#692b37;background:rgba(53,20,28,.94)}.card.bad .value{color:var(--red)}.label{color:var(--muted);font-size:12px}.value{font-size:27px;font-weight:650;margin-top:8px}.section{padding:18px;margin-bottom:16px;overflow:auto}.row{display:flex;gap:8px;align-items:center}.dot{width:8px;height:8px;border-radius:50%;background:var(--green)}.dot.bad{background:var(--red)}table{border-collapse:collapse;width:100%;min-width:720px}th,td{text-align:left;padding:11px 8px;border-top:1px solid var(--line)}th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em}code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;color:#b9c7d7}.bar{height:5px;background:#233044;border-radius:4px;overflow:hidden;margin-top:5px;width:110px}.bar i{display:block;height:100%;background:var(--blue);border-radius:4px}.error{color:var(--red)}.pill{padding:3px 7px;border-radius:20px;background:#153421;color:var(--green);font-size:11px}.pill.bad{background:#3a1a21;color:var(--red)}@media(max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}header{align-items:flex-start;flex-direction:column;gap:8px}}</style>
+</head><body><main><header><div><h1>Maimons Monitor</h1><div class="muted">Live Docker runtime and Cloudflare edge metrics.</div></div><div id="stamp" class="muted" aria-live="polite">Connecting to live metrics…</div></header>
+<div class="loading" id="loading" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span id="loading-text">Connecting to Docker, Tunnel, history, and Cloudflare…</span></div><div class="grid" id="cards"></div><section class="section"><h2>Containers</h2><div id="containers"><span class="muted">Waiting for the first live sample…</span></div></section><section class="section"><h2>Container high / low history — 30 days</h2><div id="history"><span class="muted">Opening history…</span></div></section><section class="section"><h2>Cloudflare edge — trailing 24 hours</h2><div id="edge"><span class="muted">Loading edge analytics…</span></div></section></main>
 <script>
-const demo=new URLSearchParams(location.search).get('demo');document.querySelectorAll('nav a').forEach(a=>{if(a.href===location.href)a.classList.add('active')});if(demo){const banner=document.querySelector('#demo');banner.style.display='block';banner.textContent=`Example data · ${demo==='incident'?'Degraded incident state':'Healthy platform state'}`}
 const fmt=n=>new Intl.NumberFormat().format(Math.round(n||0)); const bytes=n=>{if(!n)return '0 B';const u=['B','KB','MB','GB','TB'],i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),4);return `${(n/1024**i).toFixed(i?1:0)} ${u[i]}`};
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const metricValue=(metric,value)=>{if(value==null)return '—';if(metric.toLowerCase().includes('bytes'))return bytes(value);if(metric.toLowerCase().includes('percent'))return `${Number(value).toFixed(1)}%`;if(metric==='running')return value?'Running':'Stopped';return fmt(value)};
 function cards(d){const t=d.tunnel||{}, c=d.docker?.containers||[], running=c.filter(x=>x.state==='running').length, a=d.cloudflare?.hostnames||[], requests=a.reduce((n,x)=>n+x.requests,0), visits=a.reduce((n,x)=>n+x.visits,0), volume=a.reduce((n,x)=>n+x.bytes,0),items=[['Tunnel',t.ok?`${fmt(t.connections)} connections`:'Unavailable',!t.ok||t.connections<4],['Containers',`${running} / ${c.length} running`,running<c.length],['Tunnel traffic',`${fmt(t.totalRequests)} requests`,false],['Tunnel errors',fmt(t.requestErrors),t.requestErrors>50],['Edge requests',`${fmt(requests)} · 24h`,false],['Visits',`${fmt(visits)} · ${bytes(volume)}`,false]];return items.map(([l,v,bad])=>`<div class="card ${bad?'bad':''}"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('')}
 function containerTable(d){if(!d.ok)return `<div class="error">${esc(d.error)}</div>`;if(!d.containers.length)return '<div class="muted">No containers found.</div>';return `<table><thead><tr><th>Status</th><th>Container</th><th>CPU</th><th>Memory</th><th>Network</th><th>Image</th></tr></thead><tbody>${d.containers.map(x=>{const mem=x.memoryLimitBytes?x.memoryBytes/x.memoryLimitBytes*100:0;return `<tr><td><span class="pill ${x.state==='running'?'':'bad'}">${esc(x.state)}</span></td><td><strong>${esc(x.name)}</strong><div class="muted">${esc(x.status)}</div></td><td>${x.cpuPercent==null?'—':x.cpuPercent.toFixed(1)+'%'}</td><td>${x.memoryBytes==null?'—':bytes(x.memoryBytes)}<div class="bar"><i style="width:${Math.min(mem,100)}%"></i></div></td><td>${x.rxBytes==null?'—':`↓ ${bytes(x.rxBytes)} · ↑ ${bytes(x.txBytes)}`}</td><td><code>${esc(x.image)}</code></td></tr>`}).join('')}</tbody></table>`}
+function historyTable(d){if(!d.ok)return `<div class="error">${esc(d.error)}</div>`;if(!d.metrics.length)return '<div class="muted">History starts collecting after deployment. Hourly low/high rollups are retained for 30 days.</div>';return `<table><thead><tr><th>Container</th><th>Metric</th><th>Low</th><th>High</th><th>Samples</th><th>Observed</th></tr></thead><tbody>${d.metrics.map(x=>`<tr><td><strong>${esc(x.container)}</strong></td><td><code>${esc(x.metric)}</code></td><td>${metricValue(x.metric,x.low)}</td><td>${metricValue(x.metric,x.high)}</td><td>${fmt(x.samples)}</td><td class="muted">${new Date(x.firstBucket).toLocaleDateString()} – ${new Date(x.lastBucket).toLocaleDateString()}</td></tr>`).join('')}</tbody></table>`}
 function edgeTable(d){if(!d.configured)return '<div class="muted">Add the read-only Cloudflare analytics token and zone ID to enable edge analytics.</div>';if(!d.ok)return `<div class="error">${esc(d.error)}</div>`;if(!d.hostnames.length)return '<div class="muted">No matching hostname traffic in the last 24 hours.</div>';return `<table><thead><tr><th>Hostname</th><th>Requests</th><th>Visits</th><th>Edge volume</th></tr></thead><tbody>${d.hostnames.map(x=>`<tr><td><strong>${esc(x.hostname)}</strong></td><td>${fmt(x.requests)}</td><td>${fmt(x.visits)}</td><td>${bytes(x.bytes)}</td></tr>`).join('')}</tbody></table>`}
-async function refresh(){try{const endpoint=demo?`/api/status?demo=${encodeURIComponent(demo)}`:'/api/status',r=await fetch(endpoint,{cache:'no-store'}),d=await r.json();document.querySelector('#cards').innerHTML=cards(d);document.querySelector('#containers').innerHTML=containerTable(d.docker);document.querySelector('#edge').innerHTML=edgeTable(d.cloudflare);document.querySelector('#stamp').textContent=`Updated ${new Date(d.generatedAt).toLocaleTimeString()} · ${d.viewer||'Cloudflare Access'}`;}catch(e){document.querySelector('#stamp').innerHTML=`<span class="error">${esc(e)}</span>`}}refresh();if(!demo)setInterval(refresh,10000);
+async function refresh(){try{const [statusResponse,historyResponse]=await Promise.all([fetch('/api/status',{cache:'no-store'}),fetch('/api/history/overview',{cache:'no-store'})]);if(!statusResponse.ok||!historyResponse.ok)throw new Error(`Live update failed (${statusResponse.status}/${historyResponse.status})`);const d=await statusResponse.json(),h=await historyResponse.json();document.querySelector('#cards').innerHTML=cards(d);document.querySelector('#containers').innerHTML=containerTable(d.docker);document.querySelector('#history').innerHTML=historyTable(h);document.querySelector('#edge').innerHTML=edgeTable(d.cloudflare);document.querySelector('#loading').classList.add('hidden');document.querySelector('#stamp').textContent=`Live · updated ${new Date(d.generatedAt).toLocaleTimeString()} · ${d.viewer||'Cloudflare Access'}`;}catch(e){document.querySelector('#loading-text').textContent=`Still waiting for live metrics: ${e}`;document.querySelector('#stamp').innerHTML='<span class="error">Live update unavailable</span>'}}refresh();setInterval(refresh,10000);
 </script></body></html>'''
 
 
@@ -374,21 +675,56 @@ class Handler(BaseHTTPRequestHandler):
         if request_url.path == "/":
             self.send_body(200, HTML.encode(), "text/html; charset=utf-8")
         elif request_url.path == "/healthz":
-            self.send_body(200, b'{"ok":true}\n', "application/json")
-        elif request_url.path == "/api/status":
-            demo = query.get("demo", [""])[0]
-            if demo in {"healthy", "incident"}:
-                payload = demo_status(demo)
+            if history.error:
+                self.send_body(
+                    503,
+                    b'{"ok":false,"history":false}\n',
+                    "application/json",
+                )
             else:
-                payload = {
-                    "generatedAt": datetime.now(timezone.utc).isoformat(),
-                    "viewer": self.headers.get(
-                        "Cf-Access-Authenticated-User-Email", ""
-                    ),
-                    "docker": collect_docker(),
-                    "tunnel": collect_tunnel(),
-                    "cloudflare": analytics.get(),
-                }
+                self.send_body(
+                    200,
+                    b'{"ok":true,"history":true}\n',
+                    "application/json",
+                )
+        elif request_url.path == "/metrics":
+            self.send_body(
+                200,
+                prometheus_metrics(),
+                "text/plain; version=0.0.4; charset=utf-8",
+            )
+        elif request_url.path == "/api/history/overview":
+            self.send_body(
+                200,
+                json.dumps(history.overview(), separators=(",", ":")).encode(),
+                "application/json",
+            )
+        elif request_url.path == "/api/history":
+            try:
+                hours = int(query.get("hours", [str(24 * HISTORY_RETENTION_DAYS)])[0])
+            except ValueError:
+                self.send_body(400, b'{"error":"hours must be an integer"}\n', "application/json")
+                return
+            container_name = query.get("container", [""])[0]
+            self.send_body(
+                200,
+                json.dumps(
+                    history.series(container_name=container_name, hours=hours),
+                    separators=(",", ":"),
+                ).encode(),
+                "application/json",
+            )
+        elif request_url.path == "/api/status":
+            snapshot = runtime.get()
+            payload = {
+                "generatedAt": datetime.now(timezone.utc).isoformat(),
+                "viewer": self.headers.get(
+                    "Cf-Access-Authenticated-User-Email", ""
+                ),
+                "docker": snapshot["docker"],
+                "tunnel": snapshot["tunnel"],
+                "cloudflare": analytics.get(),
+            }
             self.send_body(
                 200,
                 json.dumps(payload, separators=(",", ":")).encode(),
@@ -403,4 +739,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     threading.Thread(target=analytics_loop, daemon=True).start()
+    threading.Thread(target=history_loop, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "3000"))), Handler).serve_forever()
