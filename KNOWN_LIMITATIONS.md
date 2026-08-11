@@ -4,7 +4,7 @@ This document outlines the intentional scope boundaries of the maimons-infra Clo
 
 ## Infrastructure Constraints
 
-### Single EC2 Instance
+### Single EC2 Instance 
 - **Limitation:** All services run on a single EC2 instance
 - **Scope:** No load balancing, no automatic scaling, no multi-region deployment
 - **Implication:** Single instance is a single point of failure; scaling requires vertical (larger instance) not horizontal (more instances)
