@@ -39,7 +39,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/maimons-infra-github-ssm
+          role-to-assume: arn:aws:iam::236565801201:role/maimons-infra-github-ssm
 
       - name: Log in to Amazon ECR
         id: ecr
