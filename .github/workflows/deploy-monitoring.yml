@@ -20,6 +20,7 @@ permissions:
 env:
   AWS_REGION: eu-central-1
   ECR_REPOSITORY: monitoring
+  AWS_ACCOUNT_ID: "236565801201"
 
 jobs:
   deploy:
@@ -38,6 +39,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/maimons-infra-github-ssm
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
 
       - name: Log in to Amazon ECR
