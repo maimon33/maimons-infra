@@ -40,7 +40,6 @@ jobs:
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/maimons-infra-github-ssm
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
 
       - name: Log in to Amazon ECR
         id: ecr
