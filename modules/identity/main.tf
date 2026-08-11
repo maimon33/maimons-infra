@@ -101,8 +101,9 @@ resource "aws_iam_instance_profile" "host" {
 resource "aws_iam_openid_connect_provider" "github" {
   count = var.manage_github_oidc_provider ? 1 : 0
 
-  client_id_list = ["sts.amazonaws.com"]
-  url            = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["227203b5317f3818cab5b5ce596132bf36748c0e"]
+  url             = "https://token.actions.githubusercontent.com"
 
   tags = var.tags
 }

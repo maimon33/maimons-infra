@@ -14,6 +14,7 @@ Cloudflare terminates public TLS. The origin path is HTTP-only and security-grou
   definitions and state.
 - `docs/import-guide.md` describes the safe import sequence for existing resources.
 - `docs/monitoring.md` describes the protected Docker and Cloudflare monitoring dashboard.
+- `ADDING_SERVICES.md` documents how to add new applications and ingress rules.
 
 ## Safe first run
 
