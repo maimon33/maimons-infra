@@ -8,10 +8,6 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 6.0, < 7.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = ">= 3.0"
-    }
   }
 }
 
@@ -23,17 +19,10 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Generate a random secret for the tunnel (must be 32+ bytes)
-resource "random_password" "tunnel_secret" {
-  length  = 32
-  special = true
-}
-
 # Create the Cloudflare Tunnel using Zero Trust Tunnel API
 resource "cloudflare_zero_trust_tunnel_cloudflared" "platform" {
-  account_id    = var.cloudflare_account_id
-  name          = var.tunnel_name
-  tunnel_secret = random_password.tunnel_secret.result
+  account_id = var.cloudflare_account_id
+  name       = var.tunnel_name
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "platform" {

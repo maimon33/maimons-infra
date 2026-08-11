@@ -138,6 +138,15 @@ variable "services" {
     ])
     error_message = "Every service internal_port must be between 1 and 65535."
   }
+
+  validation {
+    condition = alltrue([
+      for service in values(var.services) : service.service_name != "monitoring" || (
+        service.access_path == "/" && length(service.access_emails) > 0
+      )
+    ])
+    error_message = "The monitoring service must protect the complete hostname with at least one allowed email address."
+  }
 }
 
 variable "ssh_ipv4_cidrs" {

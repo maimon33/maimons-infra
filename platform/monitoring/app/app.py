@@ -314,17 +314,17 @@ def demo_status(kind: str) -> dict[str, Any]:
         "cloudflare": {
             "ok": True,
             "configured": True,
-            "zone": "maimons.org",
+            "zone": "maimons.dev",
             "updatedAt": datetime.now(timezone.utc).isoformat(),
             "hostnames": [
                 {
-                    "hostname": "mosar.maimons.org",
+                    "hostname": "mosar.maimons.dev",
                     "requests": 82741,
                     "visits": 6390,
                     "bytes": 4831838208,
                 },
                 {
-                    "hostname": "monitor.maimons.org",
+                    "hostname": "monitor.maimons.dev",
                     "requests": 1934,
                     "visits": 124,
                     "bytes": 84211734,

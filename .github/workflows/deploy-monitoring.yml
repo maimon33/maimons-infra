@@ -1,0 +1,103 @@
+name: Deploy Monitoring
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/deploy-monitoring.yml
+      - platform/monitoring/**
+  workflow_dispatch:
+
+concurrency:
+  group: production-monitoring
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REPOSITORY: monitoring
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    defaults:
+      run:
+        working-directory: platform/monitoring
+
+    steps:
+      - name: Check out infrastructure repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push immutable image
+        id: image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          image_uri="${ECR_REGISTRY}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+          docker build --tag "${image_uri}" app
+          docker push "${image_uri}"
+          echo "uri=${image_uri}" >>"${GITHUB_OUTPUT}"
+
+      - name: Deploy through Systems Manager
+        env:
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${EC2_INSTANCE_ID}" =~ ^i-[0-9a-f]+$ ]]; then
+            echo "Invalid EC2 instance ID" >&2
+            exit 1
+          fi
+
+          compose_payload="$(base64 --wrap=0 compose.yaml)"
+          deploy_payload="$(base64 --wrap=0 deploy.sh)"
+
+          remote_command="install -d -m 0755 /opt/platform && printf '%s' '${compose_payload}' | base64 -d > /opt/platform/compose.yaml && printf '%s' '${deploy_payload}' | base64 -d > /opt/platform/deploy-monitoring.sh && chmod 0700 /opt/platform/deploy-monitoring.sh && AWS_REGION='${AWS_REGION}' /opt/platform/deploy-monitoring.sh '${IMAGE_URI}'"
+
+          parameters_file="${RUNNER_TEMP}/monitoring-ssm-parameters.json"
+          jq -n --arg command "${remote_command}" '{commands: [$command]}' >"${parameters_file}"
+
+          command_id="$(aws ssm send-command \
+            --instance-ids "${EC2_INSTANCE_ID}" \
+            --document-name AWS-RunShellScript \
+            --parameters "file://${parameters_file}" \
+            --query Command.CommandId \
+            --output text)"
+
+          echo "SSM command: ${command_id}"
+          aws ssm wait command-executed \
+            --command-id "${command_id}" \
+            --instance-id "${EC2_INSTANCE_ID}" || true
+
+          invocation="$(aws ssm get-command-invocation \
+            --command-id "${command_id}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --output json)"
+
+          jq -r '.StandardOutputContent' <<<"${invocation}"
+          jq -r '.StandardErrorContent' <<<"${invocation}" >&2
+
+          status="$(jq -r '.Status' <<<"${invocation}")"
+          if [[ "${status}" != "Success" ]]; then
+            echo "Monitoring deployment failed with SSM status: ${status}" >&2
+            exit 1
+          fi

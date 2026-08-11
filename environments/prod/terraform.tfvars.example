@@ -23,6 +23,7 @@ alarm_email_addresses = [
 
 service_secret_names = [
   "mosar/runtime",
+  "monitoring/runtime",
   "observability/grafana-cloud",
 ]
 
@@ -32,7 +33,8 @@ deployment_principal_arns = {
 
 manage_github_oidc_provider = true
 github_repository_subjects = {
-  mosar = ["repo:maimon33/mosar.maimons.org:ref:refs/heads/master"]
+  mosar      = ["repo:maimon33/mosar.maimons.org:ref:refs/heads/master"]
+  monitoring = ["repo:maimon33/maimons-infra:environment:production"]
 }
 
 services = {
@@ -48,8 +50,8 @@ services = {
     access_emails = ["REPLACE_WITH_OPERATOR_EMAIL"]
     access_path   = "/"
     health_path   = "/healthz"
-    hostname      = "monitor.maimons.org"
-    internal_port = 3000
+    hostname      = "monitor.maimons.dev"
+    internal_port = 3001
     service_name  = "monitoring"
   }
 }

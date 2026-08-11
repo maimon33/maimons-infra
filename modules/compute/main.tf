@@ -47,7 +47,7 @@ resource "aws_instance" "host" {
   })
 
   lifecycle {
-    ignore_changes  = [ami]
+    ignore_changes  = [ami, user_data]
     prevent_destroy = true
   }
 }

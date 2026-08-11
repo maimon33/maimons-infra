@@ -83,9 +83,6 @@ data "aws_iam_policy_document" "service" {
 
   statement {
     actions = [
-      "ssm:CancelCommand",
-      "ssm:GetCommandInvocation",
-      "ssm:ListCommandInvocations",
       "ssm:SendCommand",
     ]
     effect = "Allow"
@@ -93,6 +90,16 @@ data "aws_iam_policy_document" "service" {
       var.instance_arn,
       "arn:aws:ssm:*::document/AWS-RunShellScript",
     ]
+  }
+
+  statement {
+    actions = [
+      "ssm:CancelCommand",
+      "ssm:GetCommandInvocation",
+      "ssm:ListCommandInvocations",
+    ]
+    effect    = "Allow"
+    resources = ["*"]
   }
 }
 

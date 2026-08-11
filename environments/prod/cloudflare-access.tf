@@ -12,8 +12,8 @@ resource "cloudflare_dns_record" "monitoring" {
   name     = "monitor"
   type     = "CNAME"
   content  = module.cloudflare_tunnel.tunnel_cname
-  ttl      = 3600
-  proxied  = false
+  ttl      = 1
+  proxied  = true
 }
 
 resource "cloudflare_dns_record" "mosar" {
@@ -21,8 +21,8 @@ resource "cloudflare_dns_record" "mosar" {
   name     = "mosar"
   type     = "CNAME"
   content  = module.cloudflare_tunnel.tunnel_cname
-  ttl      = 3600
-  proxied  = false
+  ttl      = 1
+  proxied  = true
 }
 
 # Access policy created via API - uncomment when policy resource is available

@@ -7,9 +7,11 @@ Cloudflare terminates public TLS. The origin path is HTTP-only and security-grou
 ## Layout
 
 - `bootstrap/state` creates the encrypted, versioned S3 Terraform backend.
-- `environments/prod` composes the production platform and is the import target.
+- `environments/prod` contains the canonical production Terraform definitions.
 - `modules` contains import-friendly AWS and Cloudflare resource groups.
-- `platform` contains the host-level runtime services, including monitoring.
+- `platform/monitoring` contains the monitoring app and its operational
+  Terraform root. Its linked entry files use the canonical production
+  definitions and state.
 - `docs/import-guide.md` describes the safe import sequence for existing resources.
 - `docs/monitoring.md` describes the protected Docker and Cloudflare monitoring dashboard.
 
@@ -21,7 +23,7 @@ cp terraform.tfvars.example terraform.tfvars
 terraform init
 terraform apply
 
-cd ../../environments/prod
+cd ../../platform/monitoring
 cp backend.hcl.example backend.hcl
 cp terraform.tfvars.example terraform.tfvars
 terraform init -backend-config=backend.hcl

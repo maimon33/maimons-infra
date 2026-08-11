@@ -1,0 +1,78 @@
+name: maimons-platform
+
+services:
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.2
+    container_name: platform-docker-proxy
+    environment:
+      CONTAINERS: 1
+      INFO: 1
+      PING: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - monitoring
+    mem_limit: 64m
+    mem_reservation: 32m
+    pids_limit: 50
+    read_only: true
+    tmpfs:
+      - /run:size=8m,mode=0755
+      - /var/lib/haproxy:size=8m,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging: &platform-logging
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  monitoring:
+    build:
+      context: ./app
+    image: ${MONITORING_IMAGE:-maimons-monitor:local}
+    container_name: platform-monitoring
+    depends_on:
+      docker-proxy:
+        condition: service_started
+    environment:
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_ANALYTICS_API_TOKEN:-}
+      CLOUDFLARE_HOSTNAMES: ${CLOUDFLARE_ANALYTICS_HOSTNAMES:-}
+      CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ANALYTICS_ZONE_ID:-}
+      CLOUDFLARE_ZONE_NAME: ${CLOUDFLARE_ANALYTICS_ZONE_NAME:-maimons.dev}
+      DOCKER_API_URL: http://docker-proxy:2375
+      TUNNEL_METRICS_URL: http://host.docker.internal:20241/metrics
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - "127.0.0.1:3001:3000"
+    networks:
+      - app-egress
+      - monitoring
+    mem_limit: 256m
+    mem_reservation: 64m
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    logging: *platform-logging
+
+networks:
+  app-egress:
+    name: platform-app-egress
+  monitoring:
+    internal: true
+    name: platform-monitoring
