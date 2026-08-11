@@ -25,7 +25,6 @@ jobs:
   deploy:
     name: Build and deploy
     runs-on: ubuntu-latest
-    environment: production
 
     defaults:
       run:
