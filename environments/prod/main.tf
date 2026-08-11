@@ -94,6 +94,7 @@ module "observability" {
 module "cloudflare" {
   source = "../../modules/cloudflare"
 
+  cloudflare_api_token = var.cloudflare_api_token
   direct_origin_ip     = module.compute.elastic_ip
   manage_cache_rules   = var.manage_cloudflare_cache_rules
   manage_zone_settings = var.manage_cloudflare_zone_settings

@@ -1,3 +1,9 @@
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token for authentication."
+  type        = string
+  sensitive   = true
+}
+
 variable "direct_origin_ip" {
   description = "Elastic IP used by proxied A records when Tunnel is disabled."
   type        = string
