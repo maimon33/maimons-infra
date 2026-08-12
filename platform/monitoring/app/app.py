@@ -54,6 +54,41 @@ def block_io_bytes(stats: dict[str, Any], operation: str) -> int:
     )
 
 
+def get_container_logs(container_name: str, tail: int = 100) -> str:
+    """Get logs from a Docker container."""
+    try:
+        containers = get_json(f"{DOCKER_API_URL}/containers/json")
+        container_id = None
+        for container in containers:
+            labels = container.get("Labels") or {}
+            if labels.get("com.docker.compose.service") == container_name:
+                container_id = container["Id"]
+                break
+
+        if not container_id:
+            return f"Container '{container_name}' not found"
+
+        logs_url = f"{DOCKER_API_URL}/containers/{urllib.parse.quote(container_id)}/logs?stdout=1&stderr=1&tail={tail}"
+        with urllib.request.urlopen(logs_url, timeout=5) as response:
+            raw_logs = response.read()
+
+        # Parse Docker stream format (8 bytes header + payload per message)
+        lines = []
+        i = 0
+        while i < len(raw_logs):
+            if i + 8 > len(raw_logs):
+                break
+            stream_type = raw_logs[i]
+            size = int.from_bytes(raw_logs[i+4:i+8], 'big')
+            payload = raw_logs[i+8:i+8+size].decode('utf-8', errors='replace')
+            lines.append(payload.rstrip('\n'))
+            i += 8 + size
+
+        return '\n'.join(lines[-tail:]) if lines else "(no logs)"
+    except Exception as e:
+        return f"Error fetching logs: {str(e)}"
+
+
 def docker_stats(container: dict[str, Any]) -> dict[str, Any]:
     container_id = container["Id"]
     stats = get_json(
@@ -730,6 +765,25 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps(payload, separators=(",", ":")).encode(),
                 "application/json",
             )
+        elif request_url.path == "/api/logs":
+            service = query.get("service", [""])[0]
+            try:
+                tail = int(query.get("tail", ["100"])[0])
+            except ValueError:
+                tail = 100
+            if not service:
+                self.send_body(
+                    400,
+                    json.dumps({"error": "service parameter required"}).encode(),
+                    "application/json",
+                )
+            else:
+                logs = get_container_logs(service, tail=tail)
+                self.send_body(
+                    200,
+                    json.dumps({"service": service, "logs": logs}).encode(),
+                    "application/json",
+                )
         else:
             self.send_body(404, b"not found\n", "text/plain; charset=utf-8")
 
