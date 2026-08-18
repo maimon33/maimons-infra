@@ -4,7 +4,7 @@ RUN addgroup -S monitor && \
     adduser -S -G monitor monitor && \
     install -d -o monitor -g monitor /data
 
-COPY app.py /app/app.py
+COPY app/app.py /app/app.py
 
 USER monitor
 EXPOSE 3000

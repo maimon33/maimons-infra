@@ -9,6 +9,7 @@ locals {
     for name, service in var.services : name => {
       access_emails = service.access_emails
       access_path   = service.access_path
+      access_paths  = lookup(service, "access_paths", null)  # Optional path-based access
       hostname      = service.hostname
     }
   }

@@ -49,7 +49,7 @@ resource "cloudflare_zone_setting" "tls_1_3" {
 resource "cloudflare_zero_trust_access_application" "site" {
   for_each = {
     for key, site in var.sites : key => site
-    if length(site.access_emails) > 0
+    if length(site.access_emails) > 0 && site.access_paths == null
   }
 
   domain                     = "${each.value.hostname}${each.value.access_path}"
@@ -71,6 +71,45 @@ resource "cloudflare_zero_trust_access_application" "site" {
     include    = [for email_address in each.value.access_emails : { email = { email = email_address } }]
     name       = "Allowed users"
     precedence = 1
+  }]
+}
+
+# Path-based Access applications (when access_paths is defined)
+resource "cloudflare_zero_trust_access_application" "site_path" {
+  for_each = merge([
+    for site_key, site in var.sites : {
+      for path, emails in(site.access_paths != null ? site.access_paths : {}) :
+      "${site_key}:${path}" => {
+        site_key = site_key
+        hostname = site.hostname
+        path     = path
+        emails   = emails
+      }
+    }
+  ]...)
+
+  domain                     = each.value.hostname
+  http_only_cookie_attribute = true
+  name                       = "${each.value.site_key} ${each.value.path}"
+  options_preflight_bypass   = true
+  same_site_cookie_attribute = "lax"
+  session_duration           = "24h"
+  type                       = "self_hosted"
+  zone_id                    = var.zone_id
+
+  destinations = [{
+    type = "public"
+    uri  = "${each.value.hostname}${each.value.path}*"
+  }]
+
+  policies = [{
+    decision   = "allow"
+    name       = length(each.value.emails) > 0 ? "Allowed users" : "Allow public"
+    precedence = 1
+    include = concat(
+      [for email_address in each.value.emails : { email = { email = email_address } }],
+      length(each.value.emails) > 0 ? [] : [{ everyone = true }]
+    )
   }]
 }
 

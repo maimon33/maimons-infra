@@ -134,6 +134,36 @@ curl https://my-app.maimons.dev/
 - Used by Docker health checks to monitor the service
 - Separate from Cloudflare's health monitoring
 
+## Path-Based Access Control
+
+To protect different paths with different email restrictions, use the optional `access_paths` field:
+
+```hcl
+mosar = {
+  internal_port = 3001
+  hostname      = "mosar.maimons.org"
+  health_path   = "/healthz"
+  service_name  = "mosar"
+  access_emails = ["default@example.com"]  # Fallback/default
+  access_path   = "/"
+  # NEW: Path-based access policies
+  access_paths = {
+    "/"       = []                                    # Public root
+    "/admin"  = ["admin@example.com"]                # Admin restricted
+    "/api"    = ["api-user@example.com"]             # API restricted
+  }
+}
+```
+
+When `access_paths` is defined:
+- ✅ Creates separate Cloudflare Access applications per path
+- ✅ Each path can have different email restrictions
+- ✅ Empty email list = public access for that path
+- ✅ Non-empty list = restricted to those emails
+- ✅ All routes to the same backend service
+
+This allows granular control: e.g., `/api` public but `/admin` protected, all on one service.
+
 ### Session Duration
 - Default: 30 days (configured in Terraform)
 - Users stay logged in after Cloudflare Access authentication

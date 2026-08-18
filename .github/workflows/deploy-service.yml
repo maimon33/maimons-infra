@@ -1,6 +1,14 @@
 name: Deploy Service
 
 on:
+  workflow_dispatch:
+    inputs:
+      image_uri:
+        description: 'ECR image URI'
+        required: true
+      image_tag:
+        description: 'Image tag'
+        required: true
   workflow_call:
     inputs:
       service_name:

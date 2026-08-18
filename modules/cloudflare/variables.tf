@@ -26,6 +26,7 @@ variable "sites" {
   type = map(object({
     access_emails = optional(set(string), [])
     access_path   = optional(string, "/admin")
+    access_paths  = optional(map(list(string)), null)  # Path-based access: { "/path" = ["email1", "email2"] }
     hostname      = string
   }))
 }

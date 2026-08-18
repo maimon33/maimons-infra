@@ -126,6 +126,7 @@ variable "services" {
   type = map(object({
     access_emails = optional(set(string), [])
     access_path   = optional(string, "/admin")
+    access_paths  = optional(map(list(string)), null)
     health_path   = string
     hostname      = string
     internal_port = number
@@ -142,10 +143,10 @@ variable "services" {
   validation {
     condition = alltrue([
       for service in values(var.services) : service.service_name != "monitoring" || (
-        service.access_path == "/" && length(service.access_emails) > 0
+        service.access_paths != null && length(lookup(service.access_paths, "/", [])) > 0
       )
     ])
-    error_message = "The monitoring service must protect the complete hostname with at least one allowed email address."
+    error_message = "The monitoring service must protect the root path (/) with at least one allowed email address."
   }
 }
 

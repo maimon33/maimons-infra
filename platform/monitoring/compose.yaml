@@ -30,17 +30,16 @@ services:
         max-file: "5"
 
   monitoring:
-    build:
-      context: ./app
-    image: ${MONITORING_IMAGE:-maimons-monitor:local}
+    image: 236565801201.dkr.ecr.eu-central-1.amazonaws.com/monitoring:latest
     container_name: platform-monitoring
     depends_on:
       docker-proxy:
         condition: service_started
     environment:
-      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_ANALYTICS_API_TOKEN:-}
-      CLOUDFLARE_HOSTNAMES: ${CLOUDFLARE_ANALYTICS_HOSTNAMES:-}
-      CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ANALYTICS_ZONE_ID:-}
+      SERVICE_VERSION: ${SERVICE_TAG:-latest}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_ANALYTICS_API_TOKEN:-cfat_79hJVYuKnG4KfqYGzwWk14UmQOyf1CxWJor14NbQe1602a37}
+      CLOUDFLARE_HOSTNAMES: ${CLOUDFLARE_ANALYTICS_HOSTNAMES:-monitor.maimons.dev,mosar.maimons.org,notes.maimons.dev,dmarcer.maimons.dev,kubeman.maimons.dev}
+      CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ANALYTICS_ZONE_ID:-6f74b16f5d9fbaa7ec6c57253dc321e8}
       CLOUDFLARE_ZONE_NAME: ${CLOUDFLARE_ANALYTICS_ZONE_NAME:-maimons.dev}
       DOCKER_API_URL: http://docker-proxy:2375
       HISTORY_DB_PATH: /data/history.sqlite3
@@ -50,7 +49,7 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
-      - "127.0.0.1:3001:3000"
+      - "127.0.0.1:3000:3000"
     networks:
       - app-egress
       - monitoring
