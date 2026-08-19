@@ -24,6 +24,10 @@ resource "aws_iam_access_key" "service_key" {
 
   user       = aws_iam_user.service_user[each.value].name
   depends_on = [aws_iam_user_policy.service_policy]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Service deployment policy

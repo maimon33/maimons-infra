@@ -15,15 +15,16 @@ Service-specific IAM users provision static credentials for CI/CD pipelines. Eac
 | `ecr:GetAuthorizationToken` | `*` | Authenticate with ECR registry |
 | `secretsmanager:GetSecretValue`, `secretsmanager:DescribeSecret` | `/platform/prod/mosar/runtime` secret ARN | Retrieve runtime configuration secrets |
 | `kms:Decrypt`, `kms:DescribeKey` | Platform KMS key ARN | Decrypt secrets encrypted at rest |
-| `s3:GetObject`, `s3:ListBucket` | Backup bucket + objects | Retrieve backup data for deployment validation |
-| `ssm:SendCommand`, `ssm:GetCommandInvocation`, `ssm:ListCommandInvocations`, `ssm:CancelCommand` | `*` | Execute deployment commands on EC2 instances |
+| `s3:GetObject`, `s3:ListBucket` | Backup bucket + `mosar/*` objects | Retrieve backup data for deployment validation |
+| `ssm:SendCommand` | `arn:aws:ec2:*:*:instance/i-*` + `AWS-RunShellScript` document | Execute deployment commands on EC2 instances |
+| `ssm:GetCommandInvocation`, `ssm:ListCommandInvocations`, `ssm:CancelCommand` | `*` | Track and cancel in-flight command invocations |
 
 ### Scope
 - **ECR**: Write access limited to mosar's repository ARN only (no cross-service access)
 - **Secrets**: Read-only access to `/platform/prod/mosar/runtime` secret
 - **KMS**: Decrypt operations only (no key management permissions)
-- **S3**: Read-only access to backup bucket (no delete/put permissions)
-- **SSM**: Command execution limited to SendCommand + status operations
+- **S3**: Read-only access to the `mosar/` prefix of the backup bucket (no delete/put permissions)
+- **SSM**: `SendCommand` scoped to EC2 instances and the `AWS-RunShellScript` document; status operations only
 
 ### Why This Policy is Minimal
 - ❌ No S3 `PutObject`, `DeleteObject`, `PutBucketPolicy` (read-only backup access)
@@ -61,10 +62,21 @@ Monitoring policy intentionally excludes S3 and SSM permissions that mosar requi
 
 - Access keys stored securely in GitHub Secrets (one per service)
 - Rotation policy: 90-day manual rotation (update key, rotate secret in GitHub, deactivate old key)
+- The `aws_iam_access_key` resource uses `create_before_destroy = true`, so the replacement key is created and usable before the old one is removed (zero-downtime rotation).
 - To rotate:
-  1. Generate new access key via Terraform: `terraform apply`
-  2. Update GitHub Secrets with new credentials
-  3. Deactivate old key: `aws iam delete-access-key --access-key-id <old-key-id>`
+  1. Force a new access key. A plain `terraform apply` is a no-op because nothing in the resource changed, so target the resource for replacement:
+     ```bash
+     terraform apply -replace='module.iam_users.aws_iam_access_key.service_key["mosar"]'
+     ```
+  2. Update GitHub Secrets with the new credentials and confirm a deploy succeeds with them.
+  3. Retire the old key. Note that `delete-access-key` **deletes** the key; use `update-access-key` to deactivate while keeping it recoverable:
+     ```bash
+     # Deactivate (not delete) the old key - keeps it available for the 90-day recovery window
+     aws iam update-access-key --access-key-id <old-key-id> --status Inactive
+
+     # Or permanently delete once the new key is confirmed working
+     aws iam delete-access-key --access-key-id <old-key-id>
+     ```
 
 ## Usage in CI/CD
 
@@ -73,5 +85,5 @@ Export credentials as environment variables in GitHub Actions:
 env:
   AWS_ACCESS_KEY_ID: ${{ secrets.MOSAR_AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.MOSAR_AWS_SECRET_ACCESS_KEY }}
-  AWS_REGION: il-central-1
+  AWS_REGION: eu-central-1
 ```

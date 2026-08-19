@@ -50,14 +50,24 @@
       ],
       "Resource": [
         "${S3_BUCKET_ARN}",
-        "${S3_BUCKET_ARN}/*"
+        "${S3_BUCKET_ARN}/mosar/*"
       ]
     },
     {
-      "Sid": "SSMCommandExecution",
+      "Sid": "SSMSendCommand",
       "Effect": "Allow",
       "Action": [
-        "ssm:SendCommand",
+        "ssm:SendCommand"
+      ],
+      "Resource": [
+        "arn:aws:ec2:*:*:instance/i-*",
+        "arn:aws:ssm:*::document/AWS-RunShellScript"
+      ]
+    },
+    {
+      "Sid": "SSMCommandStatus",
+      "Effect": "Allow",
+      "Action": [
         "ssm:GetCommandInvocation",
         "ssm:ListCommandInvocations",
         "ssm:CancelCommand"

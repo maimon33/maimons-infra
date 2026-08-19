@@ -96,6 +96,12 @@ Services are defined in `local.auto.tfvars` under the `services` map. Each servi
 
 ## Session Log
 
+### 2026-08-20 — Fixed blocking findings on the iam-users branch
+- **Critical:** `modules/iam-users` indexes `var.secret_arns` by service name, but `module.data.secret_arns` is keyed by logical secret name (`<service>/runtime`). Remapped at the module call in `environments/prod/main.tf`; added the missing `mosar/runtime` entry to `service_secret_names`. `terraform plan` now runs clean.
+- **Hardening:** `mosar-deploy.json` — `ssm:SendCommand` scoped to instance + `AWS-RunShellScript` document (status actions stay `*`, invocation ARNs aren't knowable); S3 object reads narrowed to the `mosar/` prefix.
+- **Rotation:** `aws_iam_access_key.service_key` now uses `create_before_destroy`; `docs/IAM_USER_POLICIES.md` rotation steps corrected (`terraform apply -replace`, `update-access-key --status Inactive` vs `delete-access-key`) and CI region fixed to `eu-central-1`.
+- **Open:** `s3:ListBucket` is still bucket-wide (bucket ARN is required for the action); an `s3:prefix` condition would be needed to constrain listing too.
+
 ### 2026-08-12 — Fixed GitHub OIDC role assumption for deployments
 - **Problem:** GitHub Actions workflow couldn't assume IAM role despite correct trust policy configuration
 - **Root cause:** OIDC provider had invalid thumbprint (all F's) instead of GitHub's actual certificate thumbprint

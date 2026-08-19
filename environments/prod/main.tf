@@ -22,7 +22,7 @@ module "iam_users" {
   kms_key_arn           = module.data.kms_key_arn
   s3_backup_bucket_arn  = module.data.backup_bucket_arn
   ecr_repository_arns   = module.data.ecr_repository_arns
-  secret_arns           = module.data.secret_arns
+  secret_arns           = { for s in local.services : s => module.data.secret_arns["${s}/runtime"] }
 
   depends_on = [module.data]
 }
