@@ -231,3 +231,57 @@
 
 Fix Critical + Important findings before final merge.
 
+
+---
+
+## FINAL FIXES FOR CRITICAL & IMPORTANT FINDINGS
+
+**Status:** ✅ COMPLETE  
+**Agent:** Opus (most capable)  
+**Commit:** 1d433e0
+
+### All Critical Issues Fixed
+
+**Critical #1: Secret ARNs key mismatch** ✅
+- Remapped keys in prod module call: `secret_arns = { for s in local.services : s => module.data.secret_arns["${s}/runtime"] }`
+- Added missing `mosar/runtime` to `environments/prod/local.auto.tfvars`
+- **Verified:** terraform plan completes successfully (54 to add, 6 to change, 0 destroy)
+- No "Invalid index" errors
+
+### All Important Issues Fixed
+
+**Important #2: Unscoped SSM** ✅
+- Split into two statements: SendCommand scoped to instance ARN + document; status actions on * (needed for polling)
+
+**Important #4: S3 scope** ✅
+- Object resources narrowed to `${S3_BUCKET_ARN}/mosar/*`
+- Bucket-level ListBucket remains wildcard (required for that action)
+
+**Important #5: Broken rotation** ✅
+- Added `lifecycle { create_before_destroy = true }` to access key (zero-downtime support)
+- Fixed docs: terraform apply -replace syntax, create-before-destroy explanation, update-access-key vs delete distinction
+
+**Important #6: Wrong region** ✅
+- Changed CI example from il-central-1 to eu-central-1
+
+### Verification
+
+- ✅ terraform plan completes without errors
+- ✅ Docs updated to match tightened policies
+- ✅ AI_STATE.md updated with session log entry
+- ✅ No new terraform fmt violations introduced
+
+**Status:** ✅ BRANCH NOW MERGE-READY
+
+---
+
+## PLAN EXECUTION COMPLETE
+
+**Final state:**
+- 6 implementation tasks: ✅ Complete
+- 2 task-level fix rounds: ✅ Complete
+- 1 final whole-branch review: ✅ Critical/Important findings fixed
+- Branch validation: ✅ terraform plan passes
+
+**Ready for:** superpowers:finishing-a-development-branch
+
