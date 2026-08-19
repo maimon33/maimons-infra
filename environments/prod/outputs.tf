@@ -38,3 +38,20 @@ output "instance_id" {
   value       = module.compute.instance_id
 }
 
+output "iam_user_access_keys" {
+  description = "Access key IDs for service deployment users (use in GitHub Secrets)"
+  value       = module.iam_users.access_key_ids
+  sensitive   = true
+}
+
+output "iam_user_access_secrets" {
+  description = "Secret access keys for service deployment users (use in GitHub Secrets)"
+  value       = module.iam_users.access_key_secrets
+  sensitive   = true
+}
+
+output "iam_user_names" {
+  description = "IAM user names for service deployment"
+  value       = module.iam_users.user_names
+}
+
