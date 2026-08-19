@@ -36,13 +36,26 @@ Service-specific IAM users provision static credentials for CI/CD pipelines. Eac
 
 **User Name:** `{name_prefix}-monitoring-deploy-user`
 
-Identical structure to mosar, but scoped to monitoring service's resources:
-- ECR repository: monitoring's repo only
-- Secrets: `/platform/prod/monitoring/runtime` secret
-- All other permissions (KMS, S3, SSM) are service-agnostic and shared
+### Permissions Breakdown
+
+| Action | Resource | Purpose |
+|--------|----------|---------|
+| `ecr:PutImage`, `ecr:CompleteLayerUpload`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:BatchCheckLayerAvailability`, `ecr:GetDownloadUrlForLayer`, `ecr:BatchGetImage` | Monitoring ECR repository ARN | Push Docker images during CI/CD builds |
+| `ecr:GetAuthorizationToken` | `*` | Authenticate with ECR registry |
+| `secretsmanager:GetSecretValue`, `secretsmanager:DescribeSecret` | `/platform/prod/monitoring/runtime` secret ARN | Retrieve runtime configuration secrets |
+| `kms:Decrypt`, `kms:DescribeKey` | Platform KMS key ARN | Decrypt secrets encrypted at rest |
+
+### Scope
+- **ECR**: Write access limited to monitoring's repository ARN only (no cross-service access)
+- **Secrets**: Read-only access to `/platform/prod/monitoring/runtime` secret
+- **KMS**: Decrypt operations only (no key management permissions)
+- **S3**: NO access (monitoring deployment does not require backup bucket access)
+- **SSM**: NO access (monitoring deployment does not require instance command execution)
 
 ### Difference from Mosar
-Monitoring policy does NOT include S3 backup access (not needed for monitoring deployment).
+Monitoring policy intentionally excludes S3 and SSM permissions that mosar requires:
+- **No S3 access**: Monitoring does not perform backup validation or data retrieval
+- **No SSM access**: Monitoring deployment does not require EC2 instance command execution
 
 ## Access Key Rotation
 
