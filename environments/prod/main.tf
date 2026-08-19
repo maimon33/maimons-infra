@@ -11,6 +11,22 @@ module "data" {
   tags                 = local.common_tags
 }
 
+module "iam_users" {
+  source = "../../modules/iam-users"
+
+  name_prefix           = local.name_prefix
+  environment           = local.environment
+  tags                  = local.common_tags
+  services              = local.services
+
+  kms_key_arn           = module.data.kms_key_arn
+  s3_backup_bucket_arn  = module.data.backup_bucket_arn
+  ecr_repository_arns   = module.data.ecr_repository_arns
+  secret_arns           = module.data.secret_arns
+
+  depends_on = [module.data]
+}
+
 module "identity" {
   source = "../../modules/identity"
 

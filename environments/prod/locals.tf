@@ -22,4 +22,8 @@ locals {
       service_name  = service.service_name
     }
   }
+
+  name_prefix = var.project_name
+  environment = var.environment
+  services    = keys(var.services)
 }
