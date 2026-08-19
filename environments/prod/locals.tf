@@ -25,5 +25,5 @@ locals {
 
   name_prefix = var.project_name
   environment = var.environment
-  services    = keys(var.services)
+  services    = ["mosar", "monitoring"]
 }
