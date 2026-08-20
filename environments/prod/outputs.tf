@@ -55,3 +55,20 @@ output "iam_user_names" {
   value       = module.iam_users.user_names
 }
 
+output "maimons_infra_user_name" {
+  description = "Maimons-infra deployment IAM user name (for deploy-service workflow)"
+  value       = module.iam_users.maimons_infra_user_name
+}
+
+output "maimons_infra_access_key_id" {
+  description = "Maimons-infra deployment access key ID (use in GitHub Secrets as AWS_ACCESS_KEY_ID)"
+  value       = module.iam_users.maimons_infra_access_key_id
+  sensitive   = true
+}
+
+output "maimons_infra_access_key_secret" {
+  description = "Maimons-infra deployment secret access key (use in GitHub Secrets as AWS_SECRET_ACCESS_KEY)"
+  value       = module.iam_users.maimons_infra_access_key_secret
+  sensitive   = true
+}
+
