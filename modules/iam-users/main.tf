@@ -7,6 +7,30 @@ terraform {
   }
 }
 
+# Maimons-infra deployment user (infrastructure repo CI/CD)
+resource "aws_iam_user" "maimons_infra_user" {
+  name = "${var.name_prefix}-deploy-user"
+  tags = merge(var.tags, {
+    Service = "maimons-infra"
+    Purpose = "CI/CD Infrastructure Deployment"
+  })
+}
+
+resource "aws_iam_access_key" "maimons_infra_key" {
+  user       = aws_iam_user.maimons_infra_user.name
+  depends_on = [aws_iam_user_policy.maimons_infra_policy]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_iam_user_policy" "maimons_infra_policy" {
+  name   = "${var.name_prefix}-deploy"
+  user   = aws_iam_user.maimons_infra_user.name
+  policy = file("${path.module}/policies/maimons-infra-deploy.json")
+}
+
 # Service deployment IAM users
 resource "aws_iam_user" "service_user" {
   for_each = toset(var.services)

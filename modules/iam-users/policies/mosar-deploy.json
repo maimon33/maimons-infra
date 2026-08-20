@@ -11,7 +11,8 @@
         "ecr:CompleteLayerUpload",
         "ecr:BatchCheckLayerAvailability",
         "ecr:GetDownloadUrlForLayer",
-        "ecr:BatchGetImage"
+        "ecr:BatchGetImage",
+        "ecr:DescribeImages"
       ],
       "Resource": "${ECR_REPO_ARN}"
     },
